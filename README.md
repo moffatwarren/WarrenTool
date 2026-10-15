@@ -4,11 +4,12 @@ Windows tools in one lightweight tray app, installed once:
 
 - **Screen Shot** (**`Ctrl+Alt+S`**): grab a region of the screen, mark it up, and copy it to the clipboard. The Windows counterpart of `grim -g "$(slurp)" - | swappy -f -`.
 - **Wallpaper Picker** (**`Ctrl+Alt+W`**): browse your wallpapers as a scrollable row of slanted cards and set the **Desktop Wallpaper** and **Lock Screen** with one keypress.
+- **Audio Switcher** (**`Ctrl+Alt+O`**): step to the next audio output, from the outputs you choose. The Windows counterpart of the Quickshell audio menu and `audio-output-toggle.sh` in [Linux-Setup](https://github.com/moffatwarren/Linux-Setup).
 
-Both run inside one background process with one tray icon, so both hotkeys are always ready.
+All three run inside one background process with one tray icon, so every hotkey is always ready.
 
 ## Features
-- One tray icon. Left- or right-click it for the menu: **Take screenshot**, **Open wallpaper picker**, **Random wallpaper**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
+- One tray icon, showing the icon of the current audio output (Catppuccin maroon, darker on a light taskbar). **Left-click** it for the audio menu. **Right-click** it for the menu: **Take screenshot**, **Open wallpaper picker**, **Random wallpaper**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
 - Catppuccin throughout.
 - Native Windows: nothing to install first, no SDKs or Python. The one third-party library (ZXing.Net, for QR codes) is in the repo and gets built into the exe.
 
@@ -24,6 +25,11 @@ Both run inside one background process with one tray icon, so both hotkeys are a
 - Sets the Desktop wallpaper and Lock Screen together, or the Desktop only.
 - Picks up new images in the folder automatically.
 - Supports `.jpg`, `.jpeg`, `.png`, `.bmp`, and `.webp` images.
+
+**Audio Switcher**
+- Switching makes the output the default for everything: apps, and calls (Windows' "default communication device").
+- Choose which outputs `Ctrl+Alt+O` cycles through, and the icon each one gets.
+- Each output remembers the mic picked while it was in use, and brings it back when you switch to it.
 
 ---
 
@@ -42,7 +48,7 @@ Once installed, the repo folder can be moved or deleted. To update, pull the lat
 
 > Windows 11 hides new tray icons in the `^` overflow. Drag the icon onto the taskbar to keep it visible.
 
-To remove it, double-click **`uninstall.bat`**. This removes the app, the Start Menu shortcuts and the startup entry. Saved screenshots and your wallpapers are not touched.
+To remove it, double-click **`uninstall.bat`**. This removes the app, the Start Menu shortcuts, the startup entry and the audio settings. Saved screenshots and your wallpapers are not touched.
 
 ---
 
@@ -93,12 +99,40 @@ Press **`Ctrl+Alt+W`** (or choose **Open wallpaper picker** from the tray menu, 
 
 ---
 
+## Audio Switcher
+Press **`Ctrl+Alt+O`** to switch to the next output in the rotation. A popup at the bottom of the screen shows which output you're on and its volume, and the tray icon changes to that output's icon.
+
+**Left-click** the tray icon for the audio menu:
+
+| Click | Action |
+|---|---|
+| An output | Make it the default output now |
+| An output's switch | Include it in `Ctrl+Alt+O` (several can be on) |
+| An output's icon | Choose its icon (volume, speakers, headphones, earbuds, Bluetooth, display, TV). The tray icon uses it too |
+| An input | Make it the default mic. The output in use at the time remembers it |
+| A slider | Volume of the default output / input (dragging or scrolling) |
+| The percentage | Mute / unmute |
+| An input's mic icon | Mute / unmute that mic |
+| **Sound settings…** | Open Windows' Sound settings |
+| `Esc` / click elsewhere | Close |
+
+- Outputs are listed and cycled in name order. Only plugged-in devices are shown; unplugged ones keep their settings for when they come back.
+- New outputs join the rotation automatically. If every switch is off, `Ctrl+Alt+O` cycles through all of them.
+- Windows keeps a volume level per device, so each output comes back at the level you left it at.
+- The **volume** icon (the default) follows the volume level, like Windows' own. Headsets, HDMI/DisplayPort and Bluetooth devices start with a matching icon; anything else starts as **volume** until you pick one.
+- Icons come from JetBrainsMono Nerd Font, as in the Linux bar, when it is installed; otherwise from Windows' own Segoe Fluent Icons.
+- Apps you've set to a specific device in Windows' **Volume mixer** keep using that device.
+- Settings are stored in the registry under `HKCU\Software\WarrenTool\Audio` and removed by `uninstall.bat`.
+
+---
+
 ## Files Included
 - `install.bat` / `uninstall.bat` - Double-click to install or remove.
 - `Install.ps1` - The installer: builds the exe (including its icons), copies files, creates the shortcuts and wallpapers folder. Run with `-Uninstall` to remove.
-- `src\WarrenTool.cs` - The tray app: startup, the tray icon and menu, and the two hotkeys.
+- `src\WarrenTool.cs` - The tray app: startup, the tray icon and menu, and the three hotkeys.
 - `src\ScreenShot.cs` - Screen Shot: the selection overlay, the editor, text and QR code reading.
 - `src\WallpaperPicker.cs` - Wallpaper Picker: the picker window and setting the wallpaper.
+- `src\AudioSwitcher.cs` - Audio Switcher: Windows audio devices, the audio menu, the switch popup and the tray icon's artwork.
 - `src\Set-LockScreen.ps1` - Sets the Lock Screen image (WinRT API). Installed next to the exe and called by the picker.
 - `src\app.manifest` - Makes the app DPI aware, so captures are pixel-exact on scaled and mixed-DPI monitors.
 - `assets\Lowpoly_Street.png` - Starter wallpaper, copied in when the wallpapers folder has no images.

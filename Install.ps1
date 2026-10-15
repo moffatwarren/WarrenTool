@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Installs (or uninstalls) WarrenTool - Screen Shot and Wallpaper Picker in one tray app - for the current user.
+    Installs (or uninstalls) WarrenTool - Screen Shot, Wallpaper Picker and Audio Switcher in one tray app - for the current user.
 .DESCRIPTION
     Install:
       - Removes the separate Screen Shot and Wallpaper Picker apps if they are installed
@@ -11,7 +11,8 @@
       - Creates <Pictures>\Wallpapers if needed, with a starter image if it has no images
       - Turns on "Start with Windows" on a first install; afterwards keeps whatever was chosen in the tray menu
       - Starts the app in the tray
-    Uninstall removes the app folder, the shortcuts and the startup entry. Saved screenshots and wallpapers are left alone.
+    Uninstall removes the app folder, the shortcuts, the startup entry and the audio settings. Saved screenshots and
+    wallpapers are left alone.
 .PARAMETER Uninstall
     Remove WarrenTool instead of installing it.
 #>
@@ -29,6 +30,7 @@ $shotLink    = Join-Path $programs 'Screen Shot.lnk'
 $pickerLink  = Join-Path $programs 'Wallpaper Picker.lnk'
 $runKey      = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runValue    = 'WarrenTool'   # must match TrayApp.RunValue in src\WarrenTool.cs
+$settingsKey = 'HKCU:\Software\WarrenTool'   # Audio Switcher's per-output settings (src\AudioSwitcher.cs)
 $wallpapers  = Join-Path ([Environment]::GetFolderPath('MyPictures')) 'Wallpapers'
 $src         = Join-Path $PSScriptRoot 'src'
 
@@ -43,6 +45,7 @@ function Stop-App([string]$name) {
 if ($Uninstall) {
     Stop-App WarrenTool
     Remove-ItemProperty -Path $runKey -Name $runValue -ErrorAction SilentlyContinue
+    Remove-Item -Path $settingsKey -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $shotLink, $pickerLink -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "[+] $appName uninstalled. Saved screenshots and your wallpapers in $wallpapers were not touched." -ForegroundColor Green
@@ -233,15 +236,17 @@ $winrtRefs = 'Foundation', 'Globalization', 'Graphics', 'Media', 'Storage' | For
 # ZXing.Net reads QR codes for the same tool. Embedded in the exe (and loaded from there by
 # Program.LoadEmbedded), so nothing extra is installed next to it.
 $zxing = Join-Path $PSScriptRoot 'lib\zxing.dll'
-# WarrenTool.ico is the tray icon; ScreenShot.ico is the screenshot editor's window icon
+# WarrenTool.ico is the exe's icon (the tray icon is drawn at run time: the current audio output's);
+# ScreenShot.ico is the screenshot editor's window icon
 & $csc /nologo /target:winexe /optimize+ "/out:$exePath" `
-    "/win32icon:$appIcon" "/resource:$appIcon,WarrenTool.ico" "/resource:$shotIcon,ScreenShot.ico" `
+    "/win32icon:$appIcon" "/resource:$shotIcon,ScreenShot.ico" `
     "/win32manifest:$(Join-Path $src 'app.manifest')" `
     "/r:$wpf\PresentationCore.dll" "/r:$wpf\PresentationFramework.dll" "/r:$wpf\WindowsBase.dll" `
     /r:System.Xaml.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll `
     "/r:$fw\System.Runtime.dll" $winrtRefs `
     "/r:$zxing" "/resource:$zxing,zxing.dll" `
-    (Join-Path $src 'WarrenTool.cs') (Join-Path $src 'ScreenShot.cs') (Join-Path $src 'WallpaperPicker.cs')
+    (Join-Path $src 'WarrenTool.cs') (Join-Path $src 'ScreenShot.cs') (Join-Path $src 'WallpaperPicker.cs') `
+    (Join-Path $src 'AudioSwitcher.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 
 # The picker calls this to set the Lock Screen; it must sit next to the exe
@@ -289,4 +294,4 @@ if ($existing.Count -eq 0) {
 
 # Start in the tray: the installer's console holds the focus, so a window shown now would lose it right away
 Start-Process -FilePath $exePath -ArgumentList '--tray'
-Write-Host "[+] $appName is running in the tray. Ctrl+Alt+S takes a screenshot, Ctrl+Alt+W opens the wallpaper picker." -ForegroundColor Green
+Write-Host "[+] $appName is running in the tray. Ctrl+Alt+S takes a screenshot, Ctrl+Alt+W opens the wallpaper picker, Ctrl+Alt+O switches the audio output." -ForegroundColor Green

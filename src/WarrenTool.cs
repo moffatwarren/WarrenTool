@@ -1,9 +1,12 @@
-// WarrenTool - one tray app that runs Screen Shot and Wallpaper Picker.
+// WarrenTool - one tray app that runs Screen Shot, Wallpaper Picker and Audio Switcher.
 // Build with install.bat (uses the C# compiler that ships with Windows; no SDK needed).
 //
-// Runs in the background with a tray icon (left- or right-click for its menu) and two global hotkeys:
+// Runs in the background with a tray icon and three global hotkeys:
 //   Ctrl+Alt+S   take a screenshot (ScreenShot.cs)
 //   Ctrl+Alt+W   open or close the wallpaper picker (WallpaperPicker.cs)
+//   Ctrl+Alt+O   switch to the next audio output (AudioSwitcher.cs)
+// The tray icon shows the current audio output's icon. Left-click it for the audio menu,
+// right-click it for WarrenTool's menu.
 //
 // Command line:
 //   WarrenTool.exe [--screenshot | --wallpaper] [--tray] [wallpapers folder]
@@ -13,6 +16,7 @@
 // When WarrenTool is already running, a second launch hands --screenshot / --wallpaper to it and exits.
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -24,6 +28,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using AudioSwitcher;
 using ScreenShot;
 using WallpaperPicker;
 using Drawing = System.Drawing;
@@ -106,10 +111,10 @@ namespace WarrenTool
 
     class TrayApp
     {
-        const int ScreenshotHotkey = 1, WallpaperHotkey = 2;
+        const int ScreenshotHotkey = 1, WallpaperHotkey = 2, AudioHotkey = 3;
         const int WM_HOTKEY = 0x0312;
         const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_NOREPEAT = 0x4000;
-        const uint VK_S = 0x53, VK_W = 0x57;
+        const uint VK_S = 0x53, VK_W = 0x57, VK_O = 0x4F;
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunValue = "WarrenTool";   // must match $runValue in Install.ps1
 
@@ -125,6 +130,7 @@ namespace WarrenTool
         readonly WinForms.ToolStripMenuItem startupItem;
         readonly Capturer capturer;
         readonly PickerWindow picker;
+        readonly Switcher audio;
 
         public TrayApp(string folder, EventWaitHandle screenshotEvent, EventWaitHandle wallpaperEvent)
         {
@@ -132,6 +138,7 @@ namespace WarrenTool
             picker = new PickerWindow(folder);
             // Created now rather than on first use, as when the picker was its own app
             new WindowInteropHelper(picker).EnsureHandle();
+            audio = new Switcher(message => Warn("Audio Switcher", message));
 
             // A message-only window receives the global hotkeys; editors and the picker come and go, this stays
             sink = new HwndSource(new HwndSourceParameters("WarrenTool.Hotkeys")
@@ -142,6 +149,7 @@ namespace WarrenTool
             sink.AddHook(WndProc);
             bool screenshotKeyOk = RegisterHotKey(sink.Handle, ScreenshotHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_S);
             bool wallpaperKeyOk = RegisterHotKey(sink.Handle, WallpaperHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_W);
+            bool audioKeyOk = RegisterHotKey(sink.Handle, AudioHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_O);
 
             var menu = new WinForms.ContextMenuStrip
             {
@@ -178,25 +186,32 @@ namespace WarrenTool
             foreach (WinForms.ToolStripItem item in menu.Items)
                 if (item is WinForms.ToolStripMenuItem) item.Padding = new WinForms.Padding(0, 3, 0, 3);
 
+            // The icon is the current audio output's, and follows it
             icon = new WinForms.NotifyIcon
             {
-                Icon = MakeIcon(),
-                Text = "WarrenTool\nScreenshot: Ctrl+Alt+S\nWallpaper: Ctrl+Alt+W",
+                Icon = audio.Icon,
+                Text = audio.Status,
                 ContextMenuStrip = menu,
                 Visible = true,
             };
-            // There are two main actions, so a left-click opens the menu too
+            audio.IconChanged += delegate
+            {
+                icon.Icon = audio.Icon;
+                icon.Text = audio.Status;
+            };
+            // Right-click opens the menu above; left-click the audio menu
             icon.MouseClick += delegate(object s, WinForms.MouseEventArgs e)
             {
-                if (e.Button == WinForms.MouseButtons.Left) ShowMenu();
+                if (e.Button == WinForms.MouseButtons.Left) audio.ToggleMenu();
             };
 
-            if (!screenshotKeyOk && !wallpaperKeyOk)
-                Warn("WarrenTool", "Ctrl+Alt+S and Ctrl+Alt+W are already used by another app. Use the tray menu instead.");
-            else if (!screenshotKeyOk)
-                Warn("Screen Shot", "Ctrl+Alt+S is already used by another app. Use the tray menu instead.");
-            else if (!wallpaperKeyOk)
-                Warn("Wallpaper Picker", "Ctrl+Alt+W is already used by another app. Use the tray menu instead.");
+            var taken = new List<string>();
+            if (!screenshotKeyOk) taken.Add("Ctrl+Alt+S");
+            if (!wallpaperKeyOk) taken.Add("Ctrl+Alt+W");
+            if (!audioKeyOk) taken.Add("Ctrl+Alt+O");
+            if (taken.Count > 0)
+                Warn("WarrenTool", string.Join(" and ", taken) + (taken.Count == 1 ? " is" : " are")
+                    + " already used by another app. Use the tray icon instead.");
 
             // A second launch of the exe signals one of these events
             var waiter = new Thread(() =>
@@ -225,6 +240,10 @@ namespace WarrenTool
                     TogglePicker();
                     handled = true;
                     break;
+                case AudioHotkey:
+                    audio.Next();
+                    handled = true;
+                    break;
             }
             return IntPtr.Zero;
         }
@@ -232,14 +251,6 @@ namespace WarrenTool
         void Warn(string title, string message)
         {
             icon.ShowBalloonTip(5000, title, message, WinForms.ToolTipIcon.Warning);
-        }
-
-        // NotifyIcon only opens its menu on a right-click. Its own (private) method for that also
-        // makes the menu close when the user clicks elsewhere.
-        void ShowMenu()
-        {
-            var show = typeof(WinForms.NotifyIcon).GetMethod("ShowContextMenu", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (show != null) show.Invoke(icon, null);
         }
 
         // ---------- Screen Shot ----------
@@ -301,16 +312,11 @@ namespace WarrenTool
         {
             UnregisterHotKey(sink.Handle, ScreenshotHotkey);
             UnregisterHotKey(sink.Handle, WallpaperHotkey);
+            UnregisterHotKey(sink.Handle, AudioHotkey);
+            audio.Dispose();
             icon.Visible = false;
             icon.Dispose();
             Application.Current.Shutdown();
-        }
-
-        // Same .ico as the exe (embedded by Install.ps1), at the tray's size for the current DPI
-        static Drawing.Icon MakeIcon()
-        {
-            using (var stream = typeof(TrayApp).Assembly.GetManifestResourceStream("WarrenTool.ico"))
-                return new Drawing.Icon(stream, WinForms.SystemInformation.SmallIconSize);
         }
     }
 
