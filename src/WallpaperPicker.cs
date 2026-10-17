@@ -28,6 +28,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using Drawing = System.Drawing;
 using IOPath = System.IO.Path;
@@ -41,6 +42,7 @@ namespace WallpaperPicker
     class Card
     {
         public string File;
+        public string Stamp;                // size and modified time: an edited file gets a fresh thumbnail
         public string Name;                 // file name without its extension: what is shown and filtered on
         public int Index;                   // position in Batch.Cards
         public Grid Root;
@@ -87,6 +89,9 @@ namespace WallpaperPicker
         static readonly Duration FadeOut = TimeSpan.FromMilliseconds(110);
 
         static readonly string[] Extensions = { ".jpg", ".jpeg", ".png", ".bmp", ".webp" };
+        // Thumbnails at card size, so later loads skip decoding the full-size wallpaper
+        static readonly string ThumbFolder = IOPath.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarrenTool", "Thumbnails");
         // Catppuccin Mocha
         static readonly Brush Base = Solid(0x1E1E2E);       // the panel
         static readonly Brush Mantle = Solid(0x181825);     // a card whose image has not loaded
@@ -127,6 +132,8 @@ namespace WallpaperPicker
         int wheelAccum;
         volatile int focusIndex;
         DateTime hiddenAt = DateTime.MinValue;
+        FileSystemWatcher watcher;
+        readonly DispatcherTimer rescan = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern bool SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
@@ -155,6 +162,65 @@ namespace WallpaperPicker
             Deactivated += delegate { Dismiss(); };
             IsVisibleChanged += delegate { if (!IsVisible) hiddenAt = DateTime.UtcNow; };
             canvas.SizeChanged += delegate { Layout(); };
+            rescan.Tick += delegate { rescan.Stop(); Refresh(); };
+        }
+
+        // Called once at startup: loads the thumbnails in the background so the first opening is
+        // already filled in, then keeps them up to date as the folder changes
+        public void Preload()
+        {
+            Watch();
+            Refresh();
+        }
+
+        void Watch()
+        {
+            if (watcher != null || !Directory.Exists(Folder)) return;
+            try
+            {
+                watcher = new FileSystemWatcher(Folder)
+                {
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
+                };
+                // Copying a file in raises a burst of events: rescan once they stop
+                FileSystemEventHandler changed = delegate { Dispatcher.BeginInvoke(new Action(() => { rescan.Stop(); rescan.Start(); })); };
+                watcher.Created += changed;
+                watcher.Changed += changed;
+                watcher.Deleted += changed;
+                watcher.Renamed += (s, e) => changed(s, e);
+                watcher.Error += (s, e) => changed(s, null);   // missed events (buffer overflow)
+                watcher.EnableRaisingEvents = true;
+            }
+            catch { watcher = null; }
+        }
+
+        // Rescans the folder and brings the cards up to date. While the picker is on screen this
+        // waits for the next opening, which rescans anyway, so the cards don't change under the mouse.
+        void Refresh()
+        {
+            if (IsVisible) return;
+            var files = ScanFolder(Folder);
+            if (SameFiles(files)) return;
+            focusIndex = FindCurrentWallpaper(files);   // load outward from where the picker will open
+            Rebuild(files);
+        }
+
+        static string StampOf(string file)
+        {
+            try
+            {
+                var info = new FileInfo(file);
+                return info.Length + ":" + info.LastWriteTimeUtc.Ticks;
+            }
+            catch { return ""; }
+        }
+
+        bool SameFiles(List<string> files)
+        {
+            if (files.Count != batch.Cards.Count) return false;
+            for (int i = 0; i < files.Count; i++)
+                if (files[i] != batch.Cards[i].File || StampOf(files[i]) != batch.Cards[i].Stamp) return false;
+            return true;
         }
 
         public bool JustHidden { get { return (DateTime.UtcNow - hiddenAt).TotalMilliseconds < 300; } }
@@ -205,7 +271,9 @@ namespace WallpaperPicker
 
             var files = ScanFolder(Folder);
             if (files.Count == 0) return "No images (.jpg, .png, .bmp, .webp) found in:\n" + Folder;
-            if (!files.SequenceEqual(batch.Cards.Select(c => c.File))) Rebuild(files);
+            Watch();    // in case the folder was only created after startup
+            rescan.Stop();
+            if (!SameFiles(files)) Rebuild(files);
 
             // Every opening starts unfiltered (clearing the box puts all the cards back on show)
             filterBox.Clear();
@@ -394,18 +462,33 @@ namespace WallpaperPicker
             Layout();
         }
 
+        // Cards for files that haven't changed are kept, with their images, so adding or removing
+        // one wallpaper doesn't reload all the others
         void Rebuild(List<string> files)
         {
+            var old = new Dictionary<string, Card>();
+            foreach (var c in batch.Cards) old[c.File] = c;
+
             canvas.Children.Clear();
             var next = new Batch { Cards = new List<Card>(), Requested = new bool[files.Count] };
+            var thumbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < files.Count; i++)
             {
-                var c = BuildCard(files[i], i);
+                string stamp = StampOf(files[i]);
+                Card c;
+                if (old.TryGetValue(files[i], out c) && c.Stamp == stamp)
+                {
+                    c.Index = i;
+                    next.Requested[i] = c.Image.Source != null;
+                }
+                else c = BuildCard(files[i], stamp, i);
                 next.Cards.Add(c);
                 canvas.Children.Add(c.Root);
+                thumbs.Add(ThumbPath(c));
             }
             next.Shown = next.Cards.ToArray();
             batch = next;
+            PruneThumbnails(thumbs);
 
             for (int t = 0; t < 2; t++)
             {
@@ -427,7 +510,7 @@ namespace WallpaperPicker
             return shape;
         }
 
-        Card BuildCard(string file, int index)
+        Card BuildCard(string file, string stamp, int index)
         {
             double width = Strip + CardH * SlantRatio;
             var shape = CardShape(width, CardH);
@@ -489,7 +572,7 @@ namespace WallpaperPicker
 
             var card = new Card
             {
-                File = file, Name = name, Index = index,
+                File = file, Stamp = stamp, Name = name, Index = index,
                 Root = root, Image = image, Outline = outline, Slide = slide, Drift = drift,
                 Shade = shade, Face = face, Width = width, Height = CardH,
             };
@@ -729,37 +812,98 @@ namespace WallpaperPicker
                     b.Requested[idx] = true;
                 }
 
-                BitmapImage bmp = null;
-                try
-                {
-                    bmp = new BitmapImage();
-                    using (var fs = new FileStream(b.Cards[idx].File, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    {
-                        bmp.BeginInit();
-                        bmp.CacheOption = BitmapCacheOption.OnLoad;
-                        bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-                        bmp.DecodePixelHeight = decodeHeight;
-                        bmp.StreamSource = fs;
-                        bmp.EndInit();
-                    }
-                    bmp.Freeze();
-                }
-                catch
-                {
-                    bmp = null; // unsupported/corrupt file: placeholder with the file name stays visible
-                }
-
+                var card = b.Cards[idx];
+                // Null for an unsupported/corrupt file: the placeholder with the file name stays visible
+                var bmp = LoadThumbnail(card);
                 if (bmp != null)
                 {
-                    var card = b.Cards[idx];
-                    var img = bmp;
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        card.Image.Source = img;
+                        card.Image.Source = bmp;
                         card.Image.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(220)));
                     }));
                 }
             }
+        }
+
+        // From the thumbnail cache when it has this file: a card-sized JPEG decodes many times
+        // faster than a full-size wallpaper. Otherwise decodes the wallpaper and caches the result.
+        BitmapSource LoadThumbnail(Card card)
+        {
+            string thumb = ThumbPath(card);
+            if (System.IO.File.Exists(thumb))
+            {
+                var cached = Decode(thumb);
+                if (cached != null) return cached;
+            }
+            var bmp = Decode(card.File);
+            if (bmp != null) SaveThumbnail(bmp, thumb);
+            return bmp;
+        }
+
+        BitmapSource Decode(string file)
+        {
+            try
+            {
+                var bmp = new BitmapImage();
+                using (var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    bmp.BeginInit();
+                    bmp.CacheOption = BitmapCacheOption.OnLoad;
+                    bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+                    bmp.DecodePixelHeight = decodeHeight;
+                    bmp.StreamSource = fs;
+                    bmp.EndInit();
+                }
+                bmp.Freeze();
+                return bmp;
+            }
+            catch { return null; }
+        }
+
+        // Named for the file, its stamp and the decode size, so a changed file or DPI misses the cache
+        string ThumbPath(Card card)
+        {
+            string key = card.File.ToLowerInvariant() + "|" + card.Stamp + "|" + decodeHeight;
+            using (var sha = System.Security.Cryptography.SHA1.Create())
+            {
+                var hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(key));
+                return IOPath.Combine(ThumbFolder, BitConverter.ToString(hash).Replace("-", "") + ".jpg");
+            }
+        }
+
+        static void SaveThumbnail(BitmapSource bmp, string thumb)
+        {
+            string temp = thumb + ".tmp";
+            try
+            {
+                Directory.CreateDirectory(ThumbFolder);
+                var encoder = new JpegBitmapEncoder { QualityLevel = 92 };
+                encoder.Frames.Add(BitmapFrame.Create(new FormatConvertedBitmap(bmp, PixelFormats.Bgr24, null, 0)));
+                using (var fs = System.IO.File.Create(temp)) encoder.Save(fs);
+                // Written aside, then moved into place, so a half-written thumbnail is never read
+                if (System.IO.File.Exists(thumb)) System.IO.File.Delete(thumb);
+                System.IO.File.Move(temp, thumb);
+            }
+            catch
+            {
+                try { System.IO.File.Delete(temp); } catch { }
+            }
+        }
+
+        // Deletes the thumbnails of wallpapers that have been removed or changed
+        static void PruneThumbnails(HashSet<string> keep)
+        {
+            Task.Run(() =>
+            {
+                try
+                {
+                    if (!Directory.Exists(ThumbFolder)) return;
+                    foreach (var f in Directory.GetFiles(ThumbFolder, "*.jpg"))
+                        if (!keep.Contains(f)) try { System.IO.File.Delete(f); } catch { }
+                }
+                catch { }
+            });
         }
 
         // ---------- Applying ----------
