@@ -1,10 +1,11 @@
-// WarrenTool - one tray app that runs Screen Shot, Wallpaper Picker and Audio Switcher.
+// WarrenTool - one tray app that runs Screen Shot, Wallpaper Picker, Audio Switcher and Clipboard Manager.
 // Build with install.bat (uses the C# compiler that ships with Windows; no SDK needed).
 //
-// Runs in the background with a tray icon and three global hotkeys:
+// Runs in the background with a tray icon and four global hotkeys:
 //   Ctrl+Alt+S   take a screenshot (ScreenShot.cs)
 //   Ctrl+Alt+W   open or close the wallpaper picker (WallpaperPicker.cs)
 //   Ctrl+Alt+O   switch to the next audio output (AudioSwitcher.cs)
+//   Ctrl+Alt+V   open or close the clipboard history (ClipboardManager.cs)
 // The tray icon shows the current audio output's icon. Left-click it for the audio menu,
 // right-click it for WarrenTool's menu.
 //
@@ -29,6 +30,7 @@ using System.Windows.Interop;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using AudioSwitcher;
+using ClipboardManager;
 using ScreenShot;
 using WallpaperPicker;
 using Drawing = System.Drawing;
@@ -111,10 +113,10 @@ namespace WarrenTool
 
     class TrayApp
     {
-        const int ScreenshotHotkey = 1, WallpaperHotkey = 2, AudioHotkey = 3;
+        const int ScreenshotHotkey = 1, WallpaperHotkey = 2, AudioHotkey = 3, ClipboardHotkey = 4;
         const int WM_HOTKEY = 0x0312;
         const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_NOREPEAT = 0x4000;
-        const uint VK_S = 0x53, VK_W = 0x57, VK_O = 0x4F;
+        const uint VK_S = 0x53, VK_W = 0x57, VK_O = 0x4F, VK_V = 0x56;
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunValue = "WarrenTool";   // must match $runValue in Install.ps1
 
@@ -131,6 +133,9 @@ namespace WarrenTool
         readonly Capturer capturer;
         readonly PickerWindow picker;
         readonly Switcher audio;
+        readonly History clipHistory;
+        readonly Recorder clipRecorder;
+        readonly ClipboardWindow clipboard;
 
         public TrayApp(string folder, EventWaitHandle screenshotEvent, EventWaitHandle wallpaperEvent)
         {
@@ -141,6 +146,12 @@ namespace WarrenTool
             // Once the tray is up, load the thumbnails so the first opening doesn't wait on them
             dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(picker.Preload));
             audio = new Switcher(message => Warn("Audio Switcher", message));
+            clipHistory = new History();
+            clipHistory.Load();
+            clipRecorder = new Recorder(clipHistory);
+            clipboard = new ClipboardWindow(clipHistory, message => Warn("Clipboard", message));
+            new WindowInteropHelper(clipboard).EnsureHandle();
+            dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(clipboard.Preload));
 
             // A message-only window receives the global hotkeys; editors and the picker come and go, this stays
             sink = new HwndSource(new HwndSourceParameters("WarrenTool.Hotkeys")
@@ -152,6 +163,7 @@ namespace WarrenTool
             bool screenshotKeyOk = RegisterHotKey(sink.Handle, ScreenshotHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_S);
             bool wallpaperKeyOk = RegisterHotKey(sink.Handle, WallpaperHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_W);
             bool audioKeyOk = RegisterHotKey(sink.Handle, AudioHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_O);
+            bool clipboardKeyOk = RegisterHotKey(sink.Handle, ClipboardHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_V);
 
             var menu = new WinForms.ContextMenuStrip
             {
@@ -175,6 +187,11 @@ namespace WarrenTool
                 ShortcutKeyDisplayString = "Ctrl+Alt+W",
             });
             menu.Items.Add("Random wallpaper", null, delegate { RandomWallpaper(); });
+            menu.Items.Add(new WinForms.ToolStripMenuItem("Open clipboard history", null, delegate { clipboard.ShowWindow(); })
+            {
+                ShortcutKeyDisplayString = "Ctrl+Alt+V",
+            });
+            menu.Items.Add("Clear clipboard history", null, delegate { ClearClipboardHistory(); });
             menu.Items.Add(new WinForms.ToolStripSeparator());
             menu.Items.Add("Open screenshots folder", null, delegate { Capturer.OpenFolder(); });
             menu.Items.Add("Open wallpapers folder", null, delegate { OpenWallpapersFolder(); });
@@ -211,6 +228,7 @@ namespace WarrenTool
             if (!screenshotKeyOk) taken.Add("Ctrl+Alt+S");
             if (!wallpaperKeyOk) taken.Add("Ctrl+Alt+W");
             if (!audioKeyOk) taken.Add("Ctrl+Alt+O");
+            if (!clipboardKeyOk) taken.Add("Ctrl+Alt+V");
             if (taken.Count > 0)
                 Warn("WarrenTool", string.Join(" and ", taken) + (taken.Count == 1 ? " is" : " are")
                     + " already used by another app. Use the tray icon instead.");
@@ -244,6 +262,10 @@ namespace WarrenTool
                     break;
                 case AudioHotkey:
                     audio.Next();
+                    handled = true;
+                    break;
+                case ClipboardHotkey:
+                    ToggleClipboard();
                     handled = true;
                     break;
             }
@@ -292,6 +314,23 @@ namespace WarrenTool
             else ShowPicker(); // shows the "folder not found" message
         }
 
+        // ---------- Clipboard Manager ----------
+
+        void ToggleClipboard()
+        {
+            // As with the picker: a recent hide counts as "was open"
+            if (clipboard.IsVisible || clipboard.JustHidden) clipboard.Dismiss();
+            else clipboard.ShowWindow();
+        }
+
+        void ClearClipboardHistory()
+        {
+            if (clipHistory.Clips.Count == 0) return;
+            var answer = MessageBox.Show("Delete all " + clipHistory.Clips.Count + " entries from the clipboard history?",
+                "Clipboard", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (answer == MessageBoxResult.Yes) clipHistory.Clear();
+        }
+
         // ---------- App ----------
 
         static bool IsStartupEnabled()
@@ -315,7 +354,9 @@ namespace WarrenTool
             UnregisterHotKey(sink.Handle, ScreenshotHotkey);
             UnregisterHotKey(sink.Handle, WallpaperHotkey);
             UnregisterHotKey(sink.Handle, AudioHotkey);
+            UnregisterHotKey(sink.Handle, ClipboardHotkey);
             audio.Dispose();
+            clipRecorder.Dispose();
             icon.Visible = false;
             icon.Dispose();
             Application.Current.Shutdown();
