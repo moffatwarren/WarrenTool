@@ -138,6 +138,8 @@ namespace WarrenTool
             picker = new PickerWindow(folder);
             // Created now rather than on first use, as when the picker was its own app
             new WindowInteropHelper(picker).EnsureHandle();
+            // Once the tray is up, load the thumbnails so the first opening doesn't wait on them
+            dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(picker.Preload));
             audio = new Switcher(message => Warn("Audio Switcher", message));
 
             // A message-only window receives the global hotkeys; editors and the picker come and go, this stays

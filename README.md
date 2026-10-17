@@ -23,7 +23,8 @@ All three run inside one background process with one tray icon, so every hotkey 
 - Opens on your current wallpaper, on the monitor your mouse is on.
 - Just start typing to filter the wallpapers by file name.
 - Sets the Desktop wallpaper and Lock Screen together, or the Desktop only.
-- Picks up new images in the folder automatically.
+- Picks up new, changed and removed images in the folder automatically.
+- Loads its thumbnails in the background when WarrenTool starts, and keeps a card-sized copy of each in `%LOCALAPPDATA%\WarrenTool\Thumbnails`, so the picker opens already filled in.
 - Supports `.jpg`, `.jpeg`, `.png`, `.bmp`, and `.webp` images.
 
 **Audio Switcher**
