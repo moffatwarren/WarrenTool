@@ -5,11 +5,12 @@ Windows tools in one lightweight tray app, installed once:
 - **Screen Shot** (**`Ctrl+Alt+S`**): grab a region of the screen, mark it up, and copy it to the clipboard. The Windows counterpart of `grim -g "$(slurp)" - | swappy -f -`.
 - **Wallpaper Picker** (**`Ctrl+Alt+W`**): browse your wallpapers as a scrollable row of slanted cards and set the **Desktop Wallpaper** and **Lock Screen** with one keypress.
 - **Audio Switcher** (**`Ctrl+Alt+O`**): step to the next audio output, from the outputs you choose. The Windows counterpart of the Quickshell audio menu and `audio-output-toggle.sh` in [Linux-Setup](https://github.com/moffatwarren/Linux-Setup).
+- **Clipboard Manager** (**`Ctrl+Alt+V`**): a searchable history of the text and images you've copied, in a window in the middle of the screen. The Windows counterpart of the Quickshell clipboard menu (`ClipboardMenu.qml` and `clipboard-history.sh`) in Linux-Setup, and it looks the same.
 
-All three run inside one background process with one tray icon, so every hotkey is always ready.
+All four run inside one background process with one tray icon, so every hotkey is always ready.
 
 ## Features
-- One tray icon, showing the icon of the current audio output (Catppuccin maroon, darker on a light taskbar). **Left-click** it for the audio menu. **Right-click** it for the menu: **Take screenshot**, **Open wallpaper picker**, **Random wallpaper**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
+- One tray icon, showing the icon of the current audio output (Catppuccin maroon, darker on a light taskbar). **Left-click** it for the audio menu. **Right-click** it for the menu: **Take screenshot**, **Open wallpaper picker**, **Random wallpaper**, **Open clipboard history**, **Clear clipboard history**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
 - Catppuccin throughout.
 - Native Windows: nothing to install first, no SDKs or Python. The one third-party library (ZXing.Net, for QR codes) is in the repo and gets built into the exe.
 
@@ -31,6 +32,12 @@ All three run inside one background process with one tray icon, so every hotkey 
 - Switching makes the output the default for everything: apps, and calls (Windows' "default communication device").
 - Choose which outputs `Ctrl+Alt+O` cycles through, and the icon each one gets.
 - Each output remembers the mic picked while it was in use, and brings it back when you switch to it.
+
+**Clipboard Manager**
+- Keeps everything you copy, text and images, newest first, with a thumbnail for each image.
+- The history is saved in `%LOCALAPPDATA%\WarrenTool\Clipboard`, so it survives a restart. It keeps the 750 newest entries.
+- Copying something that is already in the history moves it to the top instead of adding it twice.
+- Skips what password managers mark as private, as Windows' own `Win+V` history does.
 
 ---
 
@@ -127,13 +134,33 @@ Press **`Ctrl+Alt+O`** to switch to the next output in the rotation. A popup at 
 
 ---
 
+## Clipboard Manager
+Press **`Ctrl+Alt+V`** (or choose **Open clipboard history** from the tray menu) to open the history on the monitor your mouse is on.
+
+| Key / Mouse | Action |
+|---|---|
+| Type anything | Filter (matches the text, or `image` / `text` for every entry of that kind) |
+| `↑` `↓` | Move (wraps around) |
+| `PgUp` `PgDn` | Jump eight at a time |
+| `Home` `End` | Jump to the first / last |
+| `Enter` or click | Put it back on the clipboard and close, ready to paste with `Ctrl+V` |
+| `Del` or right-click | Remove it from the history (the window stays open) |
+| `Esc` / `Ctrl+Alt+V` / click outside | Close |
+
+**Clear clipboard history** in the tray menu deletes every entry, after asking.
+
+Note: Office uses `Ctrl+Alt+V` for Paste Special. While WarrenTool is running, the shortcut opens the clipboard history instead.
+
+---
+
 ## Files Included
 - `install.bat` / `uninstall.bat` - Double-click to install or remove.
 - `Install.ps1` - The installer: builds the exe (including its icons), copies files, creates the shortcuts and wallpapers folder. Run with `-Uninstall` to remove.
-- `src\WarrenTool.cs` - The tray app: startup, the tray icon and menu, and the three hotkeys.
+- `src\WarrenTool.cs` - The tray app: startup, the tray icon and menu, and the four hotkeys.
 - `src\ScreenShot.cs` - Screen Shot: the selection overlay, the editor, text and QR code reading.
 - `src\WallpaperPicker.cs` - Wallpaper Picker: the picker window and setting the wallpaper.
 - `src\AudioSwitcher.cs` - Audio Switcher: Windows audio devices, the audio menu, the switch popup and the tray icon's artwork.
+- `src\ClipboardManager.cs` - Clipboard Manager: watching the clipboard, the saved history and the history window.
 - `src\Set-LockScreen.ps1` - Sets the Lock Screen image (WinRT API). Installed next to the exe and called by the picker.
 - `src\app.manifest` - Makes the app DPI aware, so captures are pixel-exact on scaled and mixed-DPI monitors.
 - `assets\Lowpoly_Street.png` - Starter wallpaper, copied in when the wallpapers folder has no images.
