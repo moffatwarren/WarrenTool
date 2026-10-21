@@ -13,7 +13,9 @@
 //   PageUp / PageDown          eight at a time
 //   Home / End                 first / last
 //   Enter or click             put it on the clipboard, then close
-//   Delete or right-click      remove it (the window stays open)
+//   Delete                     remove it (the window stays open)
+//   Right-click                an image: mark it up in Screen Shot's editor, then close
+//                              text: remove it, as Delete does
 //   Esc / click outside        close
 
 using System;
@@ -35,6 +37,7 @@ using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Drawing = System.Drawing;
+using Capturer = ScreenShot.Capturer;
 using IOPath = System.IO.Path;
 using Mocha = AudioSwitcher.Mocha;
 using Native = ScreenShot.Native;
@@ -846,16 +849,18 @@ namespace ClipboardManager
             }
         }
 
-        // Left-click copies, right-click removes (like Delete), on the row pressed and released on
-        void Clicked(MouseButtonEventArgs e, bool remove)
+        // Left-click copies. Right-click opens an image for markup, and removes text (like Delete).
+        // Either way on the row pressed and released on.
+        void Clicked(MouseButtonEventArgs e, bool right)
         {
             e.Handled = true;
             int i = IndexAt(e.GetPosition(body));
             int pressed = pressedIndex;
             pressedIndex = -1;
             if (i < 0 || i != pressed) return;
-            if (remove) Remove(i);
-            else CopyAndClose(shown[i]);
+            if (!right) CopyAndClose(shown[i]);
+            else if (shown[i].IsImage) MarkUp(shown[i]);
+            else Remove(i);
         }
 
         // These keys drive the list; every other key is left for the filter box to type
@@ -895,6 +900,15 @@ namespace ClipboardManager
             // Hidden first, so the app underneath has the focus back for the paste
             Dismiss();
             if (!Recorder.Copy(clip)) warn("Couldn't copy: another app is using the clipboard. Try again.");
+        }
+
+        // In Screen Shot's editor, on this monitor. Copying from there adds the marked-up image to the history.
+        void MarkUp(Clip clip)
+        {
+            var screen = WinForms.Screen.FromHandle(new WindowInteropHelper(this).Handle);
+            Dismiss();
+            try { Capturer.Open(clip.File, screen); }
+            catch (Exception ex) { warn("Couldn't open the image: " + ex.Message); }
         }
     }
 }

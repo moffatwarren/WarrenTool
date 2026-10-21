@@ -3,6 +3,7 @@
 //
 // Ctrl+Alt+S (or "Take screenshot" in the tray menu) starts a capture:
 // drag a rectangle, and the region opens in an editor in the middle of the screen.
+// Right-clicking an image in the Clipboard Manager opens that image in the same editor.
 //
 //   Selecting:  drag                     select the region
 //               Esc / right-click        cancel
@@ -216,6 +217,37 @@ namespace ScreenShot
                 }
                 finally { part.UnlockBits(bits); }
             }
+        }
+
+        // Opens an image file in the editor as if it had just been captured (the Clipboard Manager's
+        // images). Throws when the file can't be read as an image.
+        public static void Open(string file, WinForms.Screen screen)
+        {
+            var editor = new EditorWindow(Load(file), screen);
+            editor.Show();
+            editor.Activate();
+        }
+
+        // In the form a capture takes, which the editor relies on: opaque BGRX at 96 DPI.
+        // Anything transparent is put on white.
+        static BitmapSource Load(string file)
+        {
+            BitmapSource image;
+            using (var stream = File.OpenRead(file))
+                image = BitmapFrame.Create(stream, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad);
+            var straight = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
+            int width = straight.PixelWidth, height = straight.PixelHeight, stride = width * 4;
+            var pixels = new byte[stride * height];
+            straight.CopyPixels(pixels, stride, 0);
+            for (int i = 0; i < pixels.Length; i += 4)
+            {
+                int alpha = pixels[i + 3];
+                if (alpha == 255) continue;
+                for (int c = i; c < i + 3; c++) pixels[c] = (byte)((pixels[c] * alpha + 255 * (255 - alpha)) / 255);
+            }
+            var shot = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgr32, null, pixels, stride);
+            shot.Freeze();
+            return shot;
         }
 
         public static void OpenFolder()

@@ -35,6 +35,7 @@ All four run inside one background process with one tray icon, so every hotkey i
 
 **Clipboard Manager**
 - Keeps everything you copy, text and images, newest first, with a thumbnail for each image.
+- Right-click an image to mark it up in Screen Shot's editor; copying it from there adds the marked-up version to the history.
 - The history is saved in `%LOCALAPPDATA%\WarrenTool\Clipboard`, so it survives a restart. It keeps the 750 newest entries.
 - Copying something that is already in the history moves it to the top instead of adding it twice.
 - Skips what password managers mark as private, as Windows' own `Win+V` history does.
@@ -144,7 +145,8 @@ Press **`Ctrl+Alt+V`** (or choose **Open clipboard history** from the tray menu)
 | `PgUp` `PgDn` | Jump eight at a time |
 | `Home` `End` | Jump to the first / last |
 | `Enter` or click | Put it back on the clipboard and close, ready to paste with `Ctrl+V` |
-| `Del` or right-click | Remove it from the history (the window stays open) |
+| `Del` | Remove it from the history (the window stays open) |
+| Right-click | An image: open it in Screen Shot's editor to mark it up. Text: remove it, as `Del` does |
 | `Esc` / `Ctrl+Alt+V` / click outside | Close |
 
 **Clear clipboard history** in the tray menu deletes every entry, after asking.
