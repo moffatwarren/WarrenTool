@@ -1364,9 +1364,12 @@ namespace ScreenShot
             try
             {
                 Directory.CreateDirectory(SaveFolder);
-                string file = IOPath.Combine(SaveFolder, "screenshot-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".png");
+                string name = "screenshot-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                string file = IOPath.Combine(SaveFolder, name + ".png");
+                // Saves in the same second (twice in a row, or from two editors) each keep their own file
+                for (int n = 2; File.Exists(file); n++) file = IOPath.Combine(SaveFolder, name + "-" + n + ".png");
                 using (var png = Png(Flatten()))
-                using (var output = File.Create(file))
+                using (var output = new FileStream(file, FileMode.CreateNew))
                     png.CopyTo(output);
                 Flash(saveText, "Saved", SaveLabel);
             }

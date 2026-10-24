@@ -577,18 +577,15 @@ namespace ClipboardManager
         }
 
         // Puts an entry back on the clipboard (where the Recorder sees it and moves it to the top, and
-        // RustDesk sends it to the other PC). False when another app is holding the clipboard.
+        // RustDesk sends it to the other PC). False when another app is holding the clipboard; throws when
+        // the entry can't be read (its image file deleted or damaged), which trying again won't fix.
         public static bool Copy(Clip clip)
         {
-            try
-            {
-                if (!clip.IsImage) return SystemClipboard.SetText(clip.Text);
-                // The PNG as it was copied, byte for byte, so the other PC's history finds its own copy of it
-                byte[] png = System.IO.File.ReadAllBytes(clip.File);
-                var frame = BitmapFrame.Create(new MemoryStream(png), BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad);
-                return SystemClipboard.SetImage(frame, png);
-            }
-            catch { return false; }
+            if (!clip.IsImage) return SystemClipboard.SetText(clip.Text);
+            // The PNG as it was copied, byte for byte, so the other PC's history finds its own copy of it
+            byte[] png = System.IO.File.ReadAllBytes(clip.File);
+            var frame = BitmapFrame.Create(new MemoryStream(png), BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad);
+            return SystemClipboard.SetImage(frame, png);
         }
     }
 
@@ -1105,7 +1102,11 @@ namespace ClipboardManager
         {
             // Hidden first, so the app underneath has the focus back for the paste
             Dismiss();
-            if (!Recorder.Copy(clip)) warn("Couldn't copy: another app is using the clipboard. Try again.");
+            try
+            {
+                if (!Recorder.Copy(clip)) warn("Couldn't copy: another app is using the clipboard. Try again.");
+            }
+            catch (Exception ex) { warn("Couldn't copy that entry: " + ex.Message); }
         }
 
         // In Screen Shot's editor, on this monitor. Copying from there adds the marked-up image to the history.

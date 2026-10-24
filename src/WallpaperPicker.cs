@@ -61,6 +61,7 @@ namespace WallpaperPicker
         public List<Card> Cards;            // every image in the folder
         public volatile Card[] Shown;       // the ones matching the filter, in the same order
         public bool[] Requested;
+        public bool Retired;                // replaced by a rescan: its loaders stop (set and read under Lock)
         public readonly object Lock = new object();
     }
 
@@ -468,6 +469,9 @@ namespace WallpaperPicker
         {
             var old = new Dictionary<string, Card>();
             foreach (var c in batch.Cards) old[c.File] = c;
+            // Stop the old batch's loaders before its cards are renumbered below: they look cards up
+            // in their own Requested by Index, and a new index can be past the end of it
+            lock (batch.Lock) batch.Retired = true;
 
             canvas.Children.Clear();
             var next = new Batch { Cards = new List<Card>(), Requested = new bool[files.Count] };
@@ -799,11 +803,12 @@ namespace WallpaperPicker
         // Stops when everything is loaded or the batch has been replaced by a rescan.
         void LoadLoop(Batch b)
         {
-            while (b == batch)
+            while (true)
             {
                 int idx;
                 lock (b.Lock)
                 {
+                    if (b.Retired) return;
                     var shown = b.Shown;
                     int f = focusIndex;
                     idx = NextToLoad(b, shown, f);

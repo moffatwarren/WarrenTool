@@ -55,6 +55,8 @@ namespace WarrenTool
         public static void Main(string[] args)
         {
             AppDomain.CurrentDomain.AssemblyResolve += LoadEmbedded;
+            // A failure on a background thread still ends the process, but leaves a note of why
+            AppDomain.CurrentDomain.UnhandledException += (s, e) => ErrorLog.Write(e.ExceptionObject as Exception);
             Run(args);
         }
 
@@ -100,12 +102,69 @@ namespace WarrenTool
 
             WinForms.Application.EnableVisualStyles();
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-            var tray = new TrayApp(folder, screenshotEvent, wallpaperEvent);
+
+            // Anything that goes wrong on the UI thread and isn't caught where it happens is logged and
+            // shown, and the app carries on: one failed click shouldn't take every hotkey and the
+            // clipboard history down with it. WPF and WinForms (the tray menu, the selection overlay)
+            // each report their own.
+            TrayApp tray = null;
+            Action<Exception> report = ex =>
+            {
+                ErrorLog.Write(ex);
+                if (tray != null) tray.ReportError(ex);
+            };
+            app.DispatcherUnhandledException += (s, e) => { e.Handled = true; report(e.Exception); };
+            WinForms.Application.SetUnhandledExceptionMode(WinForms.UnhandledExceptionMode.CatchException);
+            WinForms.Application.ThreadException += (s, e) => report(e.Exception);
+
+            tray = new TrayApp(folder, screenshotEvent, wallpaperEvent);
             if (screenshot) tray.CaptureSoon();
             if (wallpaper) app.Dispatcher.BeginInvoke(new Action(tray.ShowPicker));
             app.Run();
 
             GC.KeepAlive(mutex);
+        }
+    }
+
+    // ---------- Error log ----------
+
+    // %LOCALAPPDATA%\WarrenTool\error.log: what went wrong that nothing else caught, newest last.
+    // Past 1 MB it moves to error.old.log and starts again, so it never grows without end.
+    static class ErrorLog
+    {
+        const long MaxSize = 1024 * 1024;
+
+        public static readonly string FilePath = IOPath.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarrenTool", "error.log");
+
+        static readonly object writing = new object();
+        static string lastText;
+        static DateTime lastAt;
+
+        public static void Write(Exception ex)
+        {
+            if (ex == null) return;
+            string text = ex.ToString();
+            lock (writing)
+            {
+                // The same failure again straight away (one that repeats every frame, say) is one entry
+                if (text == lastText && (DateTime.UtcNow - lastAt).TotalSeconds < 10) return;
+                lastText = text;
+                lastAt = DateTime.UtcNow;
+                try
+                {
+                    Directory.CreateDirectory(IOPath.GetDirectoryName(FilePath));
+                    var info = new FileInfo(FilePath);
+                    if (info.Exists && info.Length > MaxSize)
+                    {
+                        string old = IOPath.ChangeExtension(FilePath, ".old.log");
+                        File.Delete(old);
+                        File.Move(FilePath, old);
+                    }
+                    File.AppendAllText(FilePath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + text + "\r\n\r\n");
+                }
+                catch { }   // nowhere left to report it
+            }
         }
     }
 
@@ -136,6 +195,7 @@ namespace WarrenTool
         readonly History clipHistory;
         readonly Recorder clipRecorder;
         readonly ClipboardWindow clipboard;
+        DateTime lastErrorShown = DateTime.MinValue;
 
         public TrayApp(string folder, EventWaitHandle screenshotEvent, EventWaitHandle wallpaperEvent)
         {
@@ -275,6 +335,17 @@ namespace WarrenTool
         void Warn(string title, string message)
         {
             icon.ShowBalloonTip(5000, title, message, WinForms.ToolTipIcon.Warning);
+        }
+
+        // Something failed that nothing else caught (Program.Run). At most one balloon a minute, so a
+        // failure that repeats doesn't bury the screen in them; the log has every one.
+        public void ReportError(Exception ex)
+        {
+            if ((DateTime.UtcNow - lastErrorShown).TotalSeconds < 60) return;
+            lastErrorShown = DateTime.UtcNow;
+            string what = ex.Message.Length <= 120 ? ex.Message : ex.Message.Substring(0, 119) + "…";
+            try { Warn("WarrenTool", "Something went wrong: " + what + "\nDetails are in " + ErrorLog.FilePath); }
+            catch { }
         }
 
         // ---------- Screen Shot ----------

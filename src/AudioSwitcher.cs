@@ -234,7 +234,8 @@ namespace AudioSwitcher
         {
             string id;
             if (device.GetId(out id) != 0) return null;
-            var e = new Endpoint { Id = id, Name = id };
+            // What is left when the properties can't be read (a device going away mid-listing)
+            var e = new Endpoint { Id = id, Name = id, Bus = "", FormFactor = -1 };
             IPropertyStore store;
             if (device.OpenPropertyStore(STGM_READ, out store) != 0) return e;
             e.Name = Read(store, FriendlyName) as string ?? id;

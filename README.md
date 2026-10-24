@@ -12,6 +12,7 @@ All four run inside one background process with one tray icon, so every hotkey i
 ## Features
 - One tray icon, showing the icon of the current audio output (Catppuccin maroon, darker on a light taskbar). **Left-click** it for the audio menu. **Right-click** it for the menu: **Take screenshot**, **Open wallpaper picker**, **Random wallpaper**, **Open clipboard history**, **Clear clipboard history**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
 - Catppuccin throughout.
+- If something goes wrong, WarrenTool keeps running: a tray notice says so, and the details go in `%LOCALAPPDATA%\WarrenTool\error.log`.
 - Native Windows: nothing to install first, no SDKs or Python. The one third-party library (ZXing.Net, for QR codes) is in the repo and gets built into the exe.
 
 **Screen Shot**
