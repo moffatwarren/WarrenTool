@@ -36,6 +36,7 @@ using System.Windows.Threading;
 using Drawing = System.Drawing;
 using IOPath = System.IO.Path;
 using ShapePath = System.Windows.Shapes.Path;
+using SystemClipboard = ClipboardManager.SystemClipboard;
 using WinForms = System.Windows.Forms;
 // WinRT, by alias only: Windows.Foundation has its own Point, Rect and Size
 using WinFoundation = global::Windows.Foundation;
@@ -1117,15 +1118,10 @@ namespace ScreenShot
             {
                 if (problem != null) { ShowToast("Couldn't read that: " + problem); return; }
                 if (items.Length == 0) { ShowToast("No text or QR code found there"); return; }
-                try
-                {
-                    Clipboard.SetText(string.Join(Environment.NewLine, items));
+                if (SystemClipboard.SetText(string.Join(Environment.NewLine, items)))
                     ShowToast((items.Length == 1 ? "Copied " + one : "Copied " + items.Length + " " + many) + ":  " + items[0]);
-                }
-                catch (Exception)
-                {
+                else
                     ShowToast("Couldn't copy it: another app is using the clipboard");
-                }
             }));
         }
 
@@ -1348,24 +1344,19 @@ namespace ScreenShot
 
         void Copy()
         {
+            bool copied;
             try
             {
                 BitmapSource flat = Flatten();
-                // No alpha channel in the bitmap: apps that mishandle it paste a black image.
-                // The PNG is for apps that prefer it (browsers, chat apps).
-                var opaque = new FormatConvertedBitmap(flat, PixelFormats.Bgr24, null, 0);
-                opaque.Freeze();
-                var data = new DataObject();
-                data.SetImage(opaque);
-                data.SetData("PNG", Png(flat), false);
-                Clipboard.SetDataObject(data, true);
-                Flash(copyText, "Copied", CopyLabel);
+                using (var png = Png(flat))
+                    copied = SystemClipboard.SetImage(flat, png.ToArray());
             }
             catch (Exception)
             {
-                // Another app is holding the clipboard open
-                Flash(copyText, "Copy failed", CopyLabel);
+                copied = false;
             }
+            // Failed: another app held the clipboard open for a whole second
+            Flash(copyText, copied ? "Copied" : "Copy failed", CopyLabel);
         }
 
         void Save()

@@ -39,6 +39,7 @@ All four run inside one background process with one tray icon, so every hotkey i
 - The history is saved in `%LOCALAPPDATA%\WarrenTool\Clipboard`, so it survives a restart. It keeps the 750 newest entries.
 - Copying something that is already in the history moves it to the top instead of adding it twice.
 - Skips what password managers mark as private, as Windows' own `Win+V` history does.
+- Works with remote-desktop clipboard sync (RustDesk, Remote Desktop). A screenshot you copy, or an entry you pick from the history, reaches the other PC's clipboard. If WarrenTool runs there too, it goes to the top of that PC's history as well.
 
 ---
 

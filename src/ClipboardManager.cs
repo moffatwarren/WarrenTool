@@ -252,12 +252,195 @@ namespace ClipboardManager
         }
     }
 
+    // ---------- The clipboard itself ----------
+
+    // Reads and writes the clipboard with the Win32 calls rather than WPF's Clipboard class. WPF puts an OLE
+    // object on the clipboard that renders each format on request, on this app's UI thread, and then
+    // "flushes" it, which opens the clipboard a second time. Clipboard sync (RustDesk, Remote Desktop) reads
+    // the clipboard the instant it changes and gives up after a few milliseconds, so the two collide: the
+    // copy lands but WPF reports a failure, and the sync or the history sometimes misses it.
+    // Here every format is rendered before the clipboard is opened, so it is held only while the memory is
+    // handed over, and nothing reading it has to wait on this app.
+    public static class SystemClipboard
+    {
+        public const uint CF_DIB = 8, CF_UNICODETEXT = 13;
+        const uint GMEM_MOVEABLE = 0x2;
+        const int WriteAttempts = 50;   // a second, as WPF's own retries
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool OpenClipboard(IntPtr owner);
+
+        [DllImport("user32.dll")]
+        static extern bool CloseClipboard();
+
+        [DllImport("user32.dll")]
+        static extern bool EmptyClipboard();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr SetClipboardData(uint format, IntPtr data);
+
+        [DllImport("user32.dll")]
+        static extern IntPtr GetClipboardData(uint format);
+
+        [DllImport("user32.dll")]
+        static extern bool IsClipboardFormatAvailable(uint format);
+
+        [DllImport("user32.dll")]
+        static extern uint GetClipboardSequenceNumber();
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern uint RegisterClipboardFormat(string name);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
+
+        [DllImport("kernel32.dll")]
+        static extern IntPtr GlobalFree(IntPtr mem);
+
+        [DllImport("kernel32.dll")]
+        static extern IntPtr GlobalLock(IntPtr mem);
+
+        [DllImport("kernel32.dll")]
+        static extern bool GlobalUnlock(IntPtr mem);
+
+        [DllImport("kernel32.dll")]
+        static extern UIntPtr GlobalSize(IntPtr mem);
+
+        public static readonly uint PngFormat = RegisterClipboardFormat("PNG");
+
+        static HwndSource owner;
+
+        // Goes up by one with every change to the clipboard
+        public static uint Sequence { get { return GetClipboardSequenceNumber(); } }
+
+        public static uint Format(string name) { return RegisterClipboardFormat(name); }
+
+        // Text, as UTF-16 (Windows makes the ANSI formats from it). False when another app held the clipboard.
+        public static bool SetText(string text)
+        {
+            return Set(Tuple.Create(CF_UNICODETEXT, Encoding.Unicode.GetBytes(text + "\0")));
+        }
+
+        // An image as a 24-bit DIB, with no alpha channel since apps that mishandle one paste a black image,
+        // and as the PNG for the apps that prefer it (browsers, chat apps, RustDesk)
+        public static bool SetImage(BitmapSource image, byte[] png)
+        {
+            return Set(Tuple.Create(CF_DIB, Dib(image)), Tuple.Create(PngFormat, png));
+        }
+
+        static bool Set(params Tuple<uint, byte[]>[] formats)
+        {
+            var handles = new IntPtr[formats.Length];
+            try
+            {
+                for (int i = 0; i < formats.Length; i++) handles[i] = Global(formats[i].Item2);
+                if (!Open(WriteAttempts)) return false;
+                try
+                {
+                    if (!EmptyClipboard()) return false;
+                    for (int i = 0; i < formats.Length; i++)
+                    {
+                        if (SetClipboardData(formats[i].Item1, handles[i]) == IntPtr.Zero) return false;
+                        handles[i] = IntPtr.Zero;   // the clipboard owns it now
+                    }
+                    return true;
+                }
+                finally { CloseClipboard(); }
+            }
+            finally
+            {
+                foreach (IntPtr h in handles) if (h != IntPtr.Zero) GlobalFree(h);
+            }
+        }
+
+        static IntPtr Global(byte[] bytes)
+        {
+            IntPtr h = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)bytes.Length);
+            if (h == IntPtr.Zero) throw new OutOfMemoryException();
+            Marshal.Copy(bytes, 0, GlobalLock(h), bytes.Length);
+            GlobalUnlock(h);
+            return h;
+        }
+
+        // Bottom-up, as every app reads it
+        static byte[] Dib(BitmapSource image)
+        {
+            var bgr = new FormatConvertedBitmap(image, PixelFormats.Bgr24, null, 0);
+            int w = bgr.PixelWidth, h = bgr.PixelHeight;
+            int stride = (w * 3 + 3) & ~3;      // rows are padded to 4 bytes
+            var pixels = new byte[stride * h];
+            bgr.CopyPixels(pixels, stride, 0);
+            var dib = new byte[40 + pixels.Length];
+            using (var header = new BinaryWriter(new MemoryStream(dib)))
+            {
+                header.Write(40);           // BITMAPINFOHEADER
+                header.Write(w);
+                header.Write(h);
+                header.Write((short)1);     // planes
+                header.Write((short)24);    // bits per pixel
+                header.Write(0);            // BI_RGB
+                header.Write(pixels.Length);
+            }
+            for (int y = 0; y < h; y++)
+                Buffer.BlockCopy(pixels, (h - 1 - y) * stride, dib, 40 + y * stride, stride);
+            return dib;
+        }
+
+        // Another app may have the clipboard open for a moment, as RustDesk does after every change
+        public static bool Open(int attempts)
+        {
+            if (owner == null)
+                owner = new HwndSource(new HwndSourceParameters("WarrenTool.ClipboardOwner")
+                {
+                    ParentWindow = new IntPtr(-3), // HWND_MESSAGE
+                    WindowStyle = 0,
+                });
+            for (int i = 1; ; i++)
+            {
+                if (OpenClipboard(owner.Handle)) return true;
+                if (i >= attempts) return false;
+                System.Threading.Thread.Sleep(20);
+            }
+        }
+
+        public static void Close() { CloseClipboard(); }
+
+        // These read the open clipboard
+        public static bool Has(uint format) { return IsClipboardFormatAvailable(format); }
+
+        // Null when the app that copied it couldn't produce it
+        public static byte[] Get(uint format)
+        {
+            IntPtr h = GetClipboardData(format);
+            if (h == IntPtr.Zero) return null;
+            IntPtr p = GlobalLock(h);
+            if (p == IntPtr.Zero) return null;
+            try
+            {
+                var bytes = new byte[(long)GlobalSize(h)];
+                Marshal.Copy(p, bytes, 0, bytes.Length);
+                return bytes;
+            }
+            finally { GlobalUnlock(h); }
+        }
+
+        public static string GetText()
+        {
+            byte[] bytes = Get(CF_UNICODETEXT);
+            if (bytes == null) return null;
+            string text = Encoding.Unicode.GetString(bytes);
+            int end = text.IndexOf('\0');
+            return end >= 0 ? text.Substring(0, end) : text;
+        }
+    }
+
     // ---------- Watching the clipboard ----------
 
     // Adds whatever is copied to the history
     public class Recorder : IDisposable
     {
         const int WM_CLIPBOARDUPDATE = 0x031D;
+        const int ReadAttempts = 30;    // 100 ms apart
 
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool AddClipboardFormatListener(IntPtr hwnd);
@@ -268,6 +451,9 @@ namespace ClipboardManager
         readonly History history;
         readonly HwndSource sink;
         readonly Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
+        readonly uint excludeFormat = SystemClipboard.Format("ExcludeClipboardContentFromMonitorProcessing");
+        readonly uint viewerIgnoreFormat = SystemClipboard.Format("Clipboard Viewer Ignore");
+        readonly uint historyFormat = SystemClipboard.Format("CanIncludeInClipboardHistory");
 
         public Recorder(History history)
         {
@@ -291,64 +477,67 @@ namespace ClipboardManager
         {
             if (msg != WM_CLIPBOARDUPDATE) return IntPtr.Zero;
             // Read after this notification returns: the copying app may still have the clipboard open
-            dispatcher.BeginInvoke(new Action(Read));
+            uint sequence = SystemClipboard.Sequence;
+            dispatcher.BeginInvoke(new Action(() => Read(sequence, 1)));
             handled = true;
             return IntPtr.Zero;
         }
 
-        void Read()
+        // The clipboard is open only long enough to copy out what is kept, so RustDesk, which reads it at the
+        // same moment and waits only a few milliseconds, isn't shut out
+        void Read(uint sequence, int attempt)
         {
+            // Something newer was copied since: its own notification reads that
+            if (SystemClipboard.Sequence != sequence) return;
+            if (!SystemClipboard.Open(1))
+            {
+                Retry(sequence, attempt);
+                return;
+            }
+            string text = null;
+            byte[] png = null, dib = null;
             try
             {
-                // Retries for a second if another app is holding the clipboard
-                WinForms.IDataObject data = WinForms.Clipboard.GetDataObject();
-                if (data == null || Private(data)) return;
-
+                if (Private()) return;
                 // Text wins: Office and browsers put a picture of a selection beside its text
-                if (data.GetDataPresent(WinForms.DataFormats.UnicodeText))
-                {
-                    history.AddText(history.NextId(), data.GetData(WinForms.DataFormats.UnicodeText) as string);
-                    return;
-                }
+                if (SystemClipboard.Has(SystemClipboard.CF_UNICODETEXT)) text = SystemClipboard.GetText();
                 // The PNG keeps transparency; apps that offer only a bitmap get that converted
-                var png = data.GetDataPresent("PNG") ? data.GetData("PNG") as MemoryStream : null;
-                if (png != null) { SaveImage(history.NextId(), png.ToArray(), null); return; }
-                if (data.GetDataPresent(WinForms.DataFormats.Bitmap))
-                {
-                    var bitmap = data.GetData(WinForms.DataFormats.Bitmap) as Drawing.Bitmap;
-                    if (bitmap != null) SaveImage(history.NextId(), null, bitmap);
-                }
+                else if (SystemClipboard.Has(SystemClipboard.PngFormat)) png = SystemClipboard.Get(SystemClipboard.PngFormat);
+                else if (SystemClipboard.Has(SystemClipboard.CF_DIB)) dib = SystemClipboard.Get(SystemClipboard.CF_DIB);
             }
-            catch { }   // the clipboard stayed busy, or the app that copied went away
+            catch { return; }   // the app that copied went away
+            finally { SystemClipboard.Close(); }
+
+            if (text != null) history.AddText(history.NextId(), text);
+            else if (png != null || dib != null) SaveImage(history.NextId(), png, dib);
+        }
+
+        // Another app has the clipboard open, as RustDesk does right after every change: try again shortly
+        void Retry(uint sequence, int attempt)
+        {
+            if (attempt >= ReadAttempts) return;
+            var timer = new DispatcherTimer(DispatcherPriority.Background, dispatcher) { Interval = TimeSpan.FromMilliseconds(100) };
+            timer.Tick += delegate { timer.Stop(); Read(sequence, attempt + 1); };
+            timer.Start();
         }
 
         // Password managers mark what they copy as not for history; Windows' own Win+V history skips it too
-        static bool Private(WinForms.IDataObject data)
+        bool Private()
         {
-            if (data.GetDataPresent("ExcludeClipboardContentFromMonitorProcessing")) return true;
-            if (data.GetDataPresent("Clipboard Viewer Ignore")) return true;
-            var allowed = data.GetDataPresent("CanIncludeInClipboardHistory")
-                ? data.GetData("CanIncludeInClipboardHistory") as MemoryStream : null;
-            return allowed != null && allowed.Length >= 4 && BitConverter.ToInt32(allowed.ToArray(), 0) == 0;
+            if (SystemClipboard.Has(excludeFormat) || SystemClipboard.Has(viewerIgnoreFormat)) return true;
+            byte[] allowed = SystemClipboard.Has(historyFormat) ? SystemClipboard.Get(historyFormat) : null;
+            return allowed != null && allowed.Length >= 4 && BitConverter.ToInt32(allowed, 0) == 0;
         }
 
         // Encoding a screen-sized image takes a moment, so it happens off the UI thread
-        void SaveImage(long id, byte[] png, Drawing.Bitmap bitmap)
+        void SaveImage(long id, byte[] png, byte[] dib)
         {
             Task.Run(() =>
             {
                 int w, h;
                 try
                 {
-                    if (png == null)
-                    {
-                        using (bitmap)
-                        using (var stream = new MemoryStream())
-                        {
-                            bitmap.Save(stream, Drawing.Imaging.ImageFormat.Png);
-                            png = stream.ToArray();
-                        }
-                    }
+                    if (png == null) png = PngFromDib(dib);
                     var frame = BitmapDecoder.Create(new MemoryStream(png), BitmapCreateOptions.DelayCreation,
                         BitmapCacheOption.None).Frames[0];
                     w = frame.PixelWidth;
@@ -359,28 +548,45 @@ namespace ClipboardManager
             });
         }
 
-        // Puts an entry back on the clipboard (where the Recorder sees it and moves it to the top).
-        // False when another app is holding the clipboard.
+        // A DIB is a .bmp file without its 14-byte file header, so with one added the BMP decoder reads it
+        static byte[] PngFromDib(byte[] dib)
+        {
+            int headerSize = BitConverter.ToInt32(dib, 0);
+            int bits = BitConverter.ToInt16(dib, 14);
+            int compression = BitConverter.ToInt32(dib, 16);
+            int colors = BitConverter.ToInt32(dib, 32);
+            if (colors == 0 && bits <= 8) colors = 1 << bits;
+            // BI_BITFIELDS after a plain BITMAPINFOHEADER: three color masks between it and the color table
+            int masks = headerSize == 40 && compression == 3 ? 12 : 0;
+            var bmp = new MemoryStream(14 + dib.Length);
+            var writer = new BinaryWriter(bmp);
+            writer.Write((byte)'B');
+            writer.Write((byte)'M');
+            writer.Write(14 + dib.Length);
+            writer.Write(0);
+            writer.Write(14 + headerSize + masks + colors * 4);    // where the pixels start
+            writer.Write(dib);
+            bmp.Position = 0;
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapDecoder.Create(bmp, BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0]);
+            using (var png = new MemoryStream())
+            {
+                encoder.Save(png);
+                return png.ToArray();
+            }
+        }
+
+        // Puts an entry back on the clipboard (where the Recorder sees it and moves it to the top, and
+        // RustDesk sends it to the other PC). False when another app is holding the clipboard.
         public static bool Copy(Clip clip)
         {
             try
             {
-                if (!clip.IsImage)
-                {
-                    Clipboard.SetDataObject(new DataObject(DataFormats.UnicodeText, clip.Text), true);
-                    return true;
-                }
+                if (!clip.IsImage) return SystemClipboard.SetText(clip.Text);
+                // The PNG as it was copied, byte for byte, so the other PC's history finds its own copy of it
                 byte[] png = System.IO.File.ReadAllBytes(clip.File);
                 var frame = BitmapFrame.Create(new MemoryStream(png), BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad);
-                // As Screen Shot copies: a bitmap without alpha, since apps that mishandle it paste black,
-                // and the PNG for the apps that prefer it
-                var opaque = new FormatConvertedBitmap(frame, PixelFormats.Bgr24, null, 0);
-                opaque.Freeze();
-                var data = new DataObject();
-                data.SetImage(opaque);
-                data.SetData("PNG", new MemoryStream(png), false);
-                Clipboard.SetDataObject(data, true);
-                return true;
+                return SystemClipboard.SetImage(frame, png);
             }
             catch { return false; }
         }
