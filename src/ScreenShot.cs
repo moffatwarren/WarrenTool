@@ -4,6 +4,8 @@
 // Ctrl+Alt+S (or "Take screenshot" in the tray menu) starts a capture:
 // drag a rectangle, and the region opens in an editor in the middle of the screen.
 // Right-clicking an image in the Clipboard Manager opens that image in the same editor.
+// Ctrl+Shift+Alt+S (or "Copy text from screen") skips the editor: the region you drag is read straight
+// away, as the editor's copy text tool reads it, and its text or QR code goes on the clipboard.
 //
 //   Selecting:  drag                     select the region
 //               Esc / right-click        cancel
@@ -30,6 +32,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
@@ -58,6 +61,15 @@ namespace ScreenShot
 
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern int GetWindowLong(IntPtr hwnd, int index);
+
+        [DllImport("user32.dll")]
+        public static extern int SetWindowLong(IntPtr hwnd, int index, int value);
 
         [DllImport("user32.dll")]
         public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
@@ -144,12 +156,13 @@ namespace ScreenShot
 
     // ---------- Capturing ----------
 
-    // Freezes the screen, lets the user drag out a region, and opens it in an editor.
-    // WarrenTool's tray icon and hotkey call in here.
+    // Freezes the screen, lets the user drag out a region, and opens it in an editor (or reads it).
+    // WarrenTool's tray icon and hotkeys call in here.
     class Capturer
     {
         readonly Action<string> warn;
         bool selecting;
+        CopiedPopup popup;
 
         // `warn` shows a problem to the user (a tray balloon)
         public Capturer(Action<string> warn)
@@ -157,16 +170,58 @@ namespace ScreenShot
             this.warn = warn;
         }
 
-        // Gives whatever was just clicked (tray menu, Start Menu) a moment to get off the screen
-        public void CaptureSoon()
+        // Give whatever was just clicked (tray menu, Start Menu) a moment to get off the screen
+        public void CaptureSoon() { Soon(Capture); }
+
+        public void CaptureTextSoon() { Soon(CaptureText); }
+
+        static void Soon(Action start)
         {
             var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-            timer.Tick += delegate { timer.Stop(); Capture(); };
+            timer.Tick += delegate { timer.Stop(); start(); };
             timer.Start();
         }
 
         // Post this rather than call it from a window procedure: the selection runs its own message loop
         public void Capture()
+        {
+            Select(delegate(Drawing.Bitmap frozen, Drawing.Rectangle region, WinForms.Screen screen)
+            {
+                var editor = new EditorWindow(Crop(frozen, region), screen);
+                editor.Show();
+                editor.Activate();
+            });
+        }
+
+        // The editor's copy text tool without the editor: what the region says goes on the clipboard.
+        // Post this too.
+        public void CaptureText()
+        {
+            IntPtr previous = Native.GetForegroundWindow();
+            Select(delegate(Drawing.Bitmap frozen, Drawing.Rectangle region, WinForms.Screen screen)
+            {
+                int width = region.Width, height = region.Height;
+                var pixels = new byte[width * 4 * height];
+                Crop(frozen, region).CopyPixels(pixels, width * 4, 0);  // BGRX
+
+                // Straight back to the window that was in front (a RustDesk session, say), so the text
+                // can be pasted there as soon as it is copied
+                if (previous != IntPtr.Zero) Native.SetForegroundWindow(previous);
+
+                Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
+                RegionText.Read(pixels, width, height, Native.ScaleOf(screen), delegate(string[] items, string one, string many, string problem)
+                {
+                    dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        if (popup == null) popup = new CopiedPopup();
+                        popup.Flash(RegionText.Copy(items, one, many, problem), screen);
+                    }));
+                });
+            });
+        }
+
+        // Freezes the screen and, once a region is dragged out, hands it to `use` with the monitor it is on
+        void Select(Action<Drawing.Bitmap, Drawing.Rectangle, WinForms.Screen> use)
         {
             if (selecting) return;
             selecting = true;
@@ -186,9 +241,7 @@ namespace ScreenShot
                     }
 
                     var center = new Drawing.Point(desktop.X + region.X + region.Width / 2, desktop.Y + region.Y + region.Height / 2);
-                    var editor = new EditorWindow(Crop(frozen, region), WinForms.Screen.FromPoint(center));
-                    editor.Show();
-                    editor.Activate();
+                    use(frozen, region, WinForms.Screen.FromPoint(center));
                 }
             }
             catch (Exception ex)
@@ -1078,51 +1131,16 @@ namespace ScreenShot
 
         // ---------- Copying text out of the shot ----------
 
-        // Reads a region of the shot (not the markup on it) and puts what it says on the clipboard:
-        // the contents of a QR code or barcode if there is one in it, otherwise its text
+        // Reads a region of the shot (not the markup on it) and puts what it says on the clipboard
         void CopyText(Int32Rect region)
         {
             int width = region.Width, height = region.Height;
             var pixels = new byte[width * 4 * height];
             shot.CopyPixels(region, pixels, width * 4, 0);  // BGRX
-            double monitorScale = scale;
-
-            // Off the UI thread: a large box takes a moment to search
-            Task.Run((Action)delegate
+            RegionText.Read(pixels, width, height, scale, delegate(string[] items, string one, string many, string problem)
             {
-                try
-                {
-                    bool qr;
-                    string[] codes = Codes.Read(pixels, width, height, out qr);
-
-                    int largeWidth, largeHeight;
-                    byte[] large = Ocr.Enlarge(pixels, width, height, monitorScale, out largeWidth, out largeHeight);
-                    // A code drawn very small only reads once enlarged
-                    if (codes == null && large != pixels && largeWidth * largeHeight <= Codes.EnlargedSearchLimit)
-                        codes = Codes.Read(large, largeWidth, largeHeight, out qr);
-
-                    if (codes != null) Copied(codes, qr ? "QR code" : "barcode", qr ? "QR codes" : "barcodes", null);
-                    else Ocr.Read(large, largeWidth, largeHeight, delegate(string[] lines, string problem) { Copied(lines, "text", "lines", problem); });
-                }
-                catch (Exception ex)
-                {
-                    Copied(null, null, null, ex.Message);
-                }
+                Dispatcher.BeginInvoke(new Action(delegate { ShowToast(RegionText.Copy(items, one, many, problem)); }));
             });
-        }
-
-        // Puts what was read on the clipboard, one item per line, and says so. Called from worker threads.
-        void Copied(string[] items, string one, string many, string problem)
-        {
-            Dispatcher.BeginInvoke(new Action(delegate
-            {
-                if (problem != null) { ShowToast("Couldn't read that: " + problem); return; }
-                if (items.Length == 0) { ShowToast("No text or QR code found there"); return; }
-                if (SystemClipboard.SetText(string.Join(Environment.NewLine, items)))
-                    ShowToast((items.Length == 1 ? "Copied " + one : "Copied " + items.Length + " " + many) + ":  " + items[0]);
-                else
-                    ShowToast("Couldn't copy it: another app is using the clipboard");
-            }));
         }
 
         void ShowToast(string message)
@@ -1385,6 +1403,117 @@ namespace ScreenShot
             var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
             timer.Tick += delegate { timer.Stop(); label.Text = normal; };
             timer.Start();
+        }
+    }
+
+    // ---------- Reading what a region says ----------
+
+    // Shared by the editor's copy text tool and Ctrl+Shift+Alt+S: the contents of a QR code or barcode
+    // if there is one in an image, otherwise its text
+    static class RegionText
+    {
+        // Reads an image (BGRX pixels) off the UI thread: a large one takes a moment to search. Calls `done`,
+        // on a worker thread, with what it says (none if nothing) and what to call one and several of them,
+        // or with a problem.
+        public static void Read(byte[] pixels, int width, int height, double monitorScale, Action<string[], string, string, string> done)
+        {
+            Task.Run((Action)delegate
+            {
+                try
+                {
+                    bool qr;
+                    string[] codes = Codes.Read(pixels, width, height, out qr);
+
+                    int largeWidth, largeHeight;
+                    byte[] large = Ocr.Enlarge(pixels, width, height, monitorScale, out largeWidth, out largeHeight);
+                    // A code drawn very small only reads once enlarged
+                    if (codes == null && large != pixels && largeWidth * largeHeight <= Codes.EnlargedSearchLimit)
+                        codes = Codes.Read(large, largeWidth, largeHeight, out qr);
+
+                    if (codes != null) done(codes, qr ? "QR code" : "barcode", qr ? "QR codes" : "barcodes", null);
+                    else Ocr.Read(large, largeWidth, largeHeight, delegate(string[] lines, string problem) { done(lines, "text", "lines", problem); });
+                }
+                catch (Exception ex)
+                {
+                    done(null, null, null, ex.Message);
+                }
+            });
+        }
+
+        // Puts what was read on the clipboard, one item per line, and returns what to tell the user. On the UI thread.
+        public static string Copy(string[] items, string one, string many, string problem)
+        {
+            if (problem != null) return "Couldn't read that: " + problem;
+            if (items.Length == 0) return "No text or QR code found there";
+            if (!SystemClipboard.SetText(string.Join(Environment.NewLine, items)))
+                return "Couldn't copy it: another app is using the clipboard";
+            return (items.Length == 1 ? "Copied " + one : "Copied " + items.Length + " " + many) + ":  " + items[0];
+        }
+    }
+
+    // What Ctrl+Shift+Alt+S copied, at the bottom of the screen for a moment, like the editor's toast.
+    // It never takes the focus or the mouse, so the window that was in front (a RustDesk session) keeps them.
+    class CopiedPopup : Window
+    {
+        const int GWL_EXSTYLE = -20, WS_EX_TRANSPARENT = 0x20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x8000000;
+
+        readonly TextBlock message = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 560 };
+        readonly DispatcherTimer linger = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2500) };
+
+        public CopiedPopup()
+        {
+            Title = "Copied";
+            WindowStyle = WindowStyle.None;
+            AllowsTransparency = true;
+            Background = Brushes.Transparent;
+            ResizeMode = ResizeMode.NoResize;
+            ShowInTaskbar = false;
+            ShowActivated = false;
+            Topmost = true;
+            Focusable = false;
+            SizeToContent = SizeToContent.WidthAndHeight;
+            FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
+            FontSize = 12.5;
+
+            message.Foreground = Theme.Solid(Theme.Text);
+            Content = new Border
+            {
+                Background = Theme.Solid(Theme.Crust, 0xF2),
+                BorderBrush = Theme.Solid(Theme.Surface1),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(12, 6, 12, 7),
+                Child = message,
+            };
+
+            SourceInitialized += delegate
+            {
+                IntPtr hwnd = new WindowInteropHelper(this).Handle;
+                Native.SetWindowLong(hwnd, GWL_EXSTYLE, Native.GetWindowLong(hwnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
+            };
+            linger.Tick += delegate
+            {
+                linger.Stop();
+                var fade = new DoubleAnimation(0, TimeSpan.FromMilliseconds(250));
+                fade.Completed += delegate { if (!linger.IsEnabled) Hide(); };
+                BeginAnimation(OpacityProperty, fade);
+            };
+        }
+
+        // Bottom middle of `screen`, just above the taskbar
+        public void Flash(string text, WinForms.Screen screen)
+        {
+            message.Text = text;
+            BeginAnimation(OpacityProperty, null);
+            Opacity = 1;
+            if (!IsVisible) Show();
+            global::AudioSwitcher.Placement.Move(this, screen, (w, h) =>
+            {
+                var area = screen.WorkingArea;
+                return new Drawing.Point(area.Left + (area.Width - w) / 2, area.Bottom - h - (int)(48 * Native.ScaleOf(screen)));
+            }, true);
+            linger.Stop();
+            linger.Start();
         }
     }
 

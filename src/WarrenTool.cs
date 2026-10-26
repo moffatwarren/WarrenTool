@@ -1,11 +1,12 @@
 // WarrenTool - one tray app that runs Screen Shot, Wallpaper Picker, Audio Switcher and Clipboard Manager.
 // Build with install.bat (uses the C# compiler that ships with Windows; no SDK needed).
 //
-// Runs in the background with a tray icon and four global hotkeys:
-//   Ctrl+Alt+S   take a screenshot (ScreenShot.cs)
-//   Ctrl+Alt+W   open or close the wallpaper picker (WallpaperPicker.cs)
-//   Ctrl+Alt+O   switch to the next audio output (AudioSwitcher.cs)
-//   Ctrl+Alt+V   open or close the clipboard history (ClipboardManager.cs)
+// Runs in the background with a tray icon and five global hotkeys:
+//   Ctrl+Alt+S         take a screenshot (ScreenShot.cs)
+//   Ctrl+Shift+Alt+S   copy the text or QR code in a region of the screen (ScreenShot.cs)
+//   Ctrl+Alt+W         open or close the wallpaper picker (WallpaperPicker.cs)
+//   Ctrl+Alt+O         switch to the next audio output (AudioSwitcher.cs)
+//   Ctrl+Alt+V         open or close the clipboard history (ClipboardManager.cs)
 // The tray icon shows the current audio output's icon. Left-click it for the audio menu,
 // right-click it for WarrenTool's menu.
 //
@@ -172,9 +173,9 @@ namespace WarrenTool
 
     class TrayApp
     {
-        const int ScreenshotHotkey = 1, WallpaperHotkey = 2, AudioHotkey = 3, ClipboardHotkey = 4;
+        const int ScreenshotHotkey = 1, WallpaperHotkey = 2, AudioHotkey = 3, ClipboardHotkey = 4, TextHotkey = 5;
         const int WM_HOTKEY = 0x0312;
-        const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_NOREPEAT = 0x4000;
+        const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_SHIFT = 0x4, MOD_NOREPEAT = 0x4000;
         const uint VK_S = 0x53, VK_W = 0x57, VK_O = 0x4F, VK_V = 0x56;
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunValue = "WarrenTool";   // must match $runValue in Install.ps1
@@ -224,6 +225,7 @@ namespace WarrenTool
             bool wallpaperKeyOk = RegisterHotKey(sink.Handle, WallpaperHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_W);
             bool audioKeyOk = RegisterHotKey(sink.Handle, AudioHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_O);
             bool clipboardKeyOk = RegisterHotKey(sink.Handle, ClipboardHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_V);
+            bool textKeyOk = RegisterHotKey(sink.Handle, TextHotkey, MOD_CONTROL | MOD_SHIFT | MOD_ALT | MOD_NOREPEAT, VK_S);
 
             var menu = new WinForms.ContextMenuStrip
             {
@@ -241,6 +243,10 @@ namespace WarrenTool
             menu.Items.Add(new WinForms.ToolStripMenuItem("Take screenshot", null, delegate { CaptureSoon(); })
             {
                 ShortcutKeyDisplayString = "Ctrl+Alt+S",
+            });
+            menu.Items.Add(new WinForms.ToolStripMenuItem("Copy text from screen", null, delegate { capturer.CaptureTextSoon(); })
+            {
+                ShortcutKeyDisplayString = "Ctrl+Shift+Alt+S",
             });
             menu.Items.Add(new WinForms.ToolStripMenuItem("Open wallpaper picker", null, delegate { ShowPicker(); })
             {
@@ -286,6 +292,7 @@ namespace WarrenTool
 
             var taken = new List<string>();
             if (!screenshotKeyOk) taken.Add("Ctrl+Alt+S");
+            if (!textKeyOk) taken.Add("Ctrl+Shift+Alt+S");
             if (!wallpaperKeyOk) taken.Add("Ctrl+Alt+W");
             if (!audioKeyOk) taken.Add("Ctrl+Alt+O");
             if (!clipboardKeyOk) taken.Add("Ctrl+Alt+V");
@@ -314,6 +321,10 @@ namespace WarrenTool
                 case ScreenshotHotkey:
                     // Posted rather than called: the selection runs its own message loop
                     dispatcher.BeginInvoke(new Action(capturer.Capture));
+                    handled = true;
+                    break;
+                case TextHotkey:
+                    dispatcher.BeginInvoke(new Action(capturer.CaptureText));
                     handled = true;
                     break;
                 case WallpaperHotkey:
@@ -426,6 +437,7 @@ namespace WarrenTool
             UnregisterHotKey(sink.Handle, WallpaperHotkey);
             UnregisterHotKey(sink.Handle, AudioHotkey);
             UnregisterHotKey(sink.Handle, ClipboardHotkey);
+            UnregisterHotKey(sink.Handle, TextHotkey);
             audio.Dispose();
             clipRecorder.Dispose();
             icon.Visible = false;

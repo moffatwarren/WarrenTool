@@ -2,7 +2,7 @@
 
 Windows tools in one lightweight tray app, installed once:
 
-- **Screen Shot** (**`Ctrl+Alt+S`**): grab a region of the screen, mark it up, and copy it to the clipboard. The Windows counterpart of `grim -g "$(slurp)" - | swappy -f -`.
+- **Screen Shot** (**`Ctrl+Alt+S`**): grab a region of the screen, mark it up, and copy it to the clipboard. The Windows counterpart of `grim -g "$(slurp)" - | swappy -f -`. **`Ctrl+Shift+Alt+S`** copies the text or QR code in a region straight to the clipboard, without the editor.
 - **Wallpaper Picker** (**`Ctrl+Alt+W`**): browse your wallpapers as a scrollable row of slanted cards and set the **Desktop Wallpaper** and **Lock Screen** with one keypress.
 - **Audio Switcher** (**`Ctrl+Alt+O`**): step to the next audio output, from the outputs you choose. The Windows counterpart of the Quickshell audio menu and `audio-output-toggle.sh` in [Linux-Setup](https://github.com/moffatwarren/Linux-Setup).
 - **Clipboard Manager** (**`Ctrl+Alt+V`**): a searchable history of the text and images you've copied, in a window in the middle of the screen. The Windows counterpart of the Quickshell clipboard menu (`ClipboardMenu.qml` and `clipboard-history.sh`) in Linux-Setup, and it looks the same.
@@ -10,7 +10,7 @@ Windows tools in one lightweight tray app, installed once:
 All four run inside one background process with one tray icon, so every hotkey is always ready.
 
 ## Features
-- One tray icon, showing the icon of the current audio output (Catppuccin maroon, darker on a light taskbar). **Left-click** it for the audio menu. **Right-click** it for the menu: **Take screenshot**, **Open wallpaper picker**, **Random wallpaper**, **Open clipboard history**, **Clear clipboard history**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
+- One tray icon, showing the icon of the current audio output (Catppuccin maroon, darker on a light taskbar). **Left-click** it for the audio menu. **Right-click** it for the menu: **Take screenshot**, **Copy text from screen**, **Open wallpaper picker**, **Random wallpaper**, **Open clipboard history**, **Clear clipboard history**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
 - Catppuccin throughout.
 - If something goes wrong, WarrenTool keeps running: a tray notice says so, and the details go in `%LOCALAPPDATA%\WarrenTool\error.log`.
 - Native Windows: nothing to install first, no SDKs or Python. The one third-party library (ZXing.Net, for QR codes) is in the repo and gets built into the exe.
@@ -20,6 +20,7 @@ All four run inside one background process with one tray icon, so every hotkey i
 - Opens the region in an editor in the middle of the screen: brush, arrow, rectangle, ellipse, text and pixelate.
 - **Copy to clipboard** copies the shot with its markup, at exactly the size you selected.
 - **Copy text** reads the text inside a box you drag on the shot and copies it as text (Windows' built-in OCR). Drag the box around a **QR code** instead and it copies the code's URL.
+- **`Ctrl+Shift+Alt+S`** does the same in one step: drag a rectangle on the screen and what it says is copied, with no editor. A note at the bottom of the screen shows what was copied, and the window you were in (a RustDesk session, say) keeps the focus, so you can paste straight away.
 
 **Wallpaper Picker**
 - Opens on your current wallpaper, on the monitor your mouse is on.
@@ -84,6 +85,9 @@ The region opens in the editor:
 | `Esc` | Close the editor |
 
 Each capture opens its own editor, so you can keep one open while taking another.
+
+### Copy text from screen
+Press **`Ctrl+Shift+Alt+S`** (or choose **Copy text from screen** from the tray menu) and drag a rectangle, as for a screenshot. Instead of opening the editor, the region is read like the editor's **Copy text** tool does it: a QR code's contents, or otherwise its text, go on the clipboard, and a note at the bottom of the screen shows what was copied. The focus goes back to the window you were in, so you can paste right away. That includes a RustDesk session: the text reaches the remote PC's clipboard the same way a screenshot copied from the editor does.
 
 **Copy text** uses the OCR engine that ships with Windows, in your Windows display language. It is reliable on ordinary interface and document text. Small monospace text (terminals, code) comes out less cleanly: expect the odd wrong character, such as `_` read as a dash or a slashed `0` read as `@`.
 

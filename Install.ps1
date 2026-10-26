@@ -294,4 +294,4 @@ if ($existing.Count -eq 0) {
 
 # Start in the tray: the installer's console holds the focus, so a window shown now would lose it right away
 Start-Process -FilePath $exePath -ArgumentList '--tray'
-Write-Host "[+] $appName is running in the tray. Ctrl+Alt+S takes a screenshot, Ctrl+Alt+W opens the wallpaper picker, Ctrl+Alt+O switches the audio output, Ctrl+Alt+V opens the clipboard history." -ForegroundColor Green
+Write-Host "[+] $appName is running in the tray. Ctrl+Alt+S takes a screenshot, Ctrl+Shift+Alt+S copies the text or QR code in a region, Ctrl+Alt+W opens the wallpaper picker, Ctrl+Alt+O switches the audio output, Ctrl+Alt+V opens the clipboard history." -ForegroundColor Green
