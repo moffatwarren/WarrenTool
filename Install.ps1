@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Installs (or uninstalls) WarrenTool - Screen Shot, Wallpaper Picker, Audio Switcher and Clipboard Manager in one tray app - for the current user.
+    Installs (or uninstalls) WarrenTool - Screen Shot, Wallpaper Picker, Audio Switcher, Clipboard Manager and Desktop Switcher in one tray app - for the current user.
 .DESCRIPTION
     Install:
       - Removes the separate Screen Shot and Wallpaper Picker apps if they are installed
@@ -246,7 +246,7 @@ $zxing = Join-Path $PSScriptRoot 'lib\zxing.dll'
     "/r:$fw\System.Runtime.dll" $winrtRefs `
     "/r:$zxing" "/resource:$zxing,zxing.dll" `
     (Join-Path $src 'WarrenTool.cs') (Join-Path $src 'ScreenShot.cs') (Join-Path $src 'WallpaperPicker.cs') `
-    (Join-Path $src 'AudioSwitcher.cs') (Join-Path $src 'ClipboardManager.cs')
+    (Join-Path $src 'AudioSwitcher.cs') (Join-Path $src 'ClipboardManager.cs') (Join-Path $src 'DesktopSwitcher.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 
 # The picker calls this to set the Lock Screen; it must sit next to the exe
@@ -294,4 +294,4 @@ if ($existing.Count -eq 0) {
 
 # Start in the tray: the installer's console holds the focus, so a window shown now would lose it right away
 Start-Process -FilePath $exePath -ArgumentList '--tray'
-Write-Host "[+] $appName is running in the tray. Ctrl+Alt+S takes a screenshot, Ctrl+Shift+Alt+S copies the text or QR code in a region, Ctrl+Alt+W opens the wallpaper picker, Ctrl+Alt+O switches the audio output, Ctrl+Alt+V opens the clipboard history." -ForegroundColor Green
+Write-Host "[+] $appName is running in the tray. Ctrl+Alt+S takes a screenshot, Ctrl+Shift+Alt+S copies the text or QR code in a region, Ctrl+Alt+W opens the wallpaper picker, Ctrl+Alt+O switches the audio output, Ctrl+Alt+V opens the clipboard history, Ctrl+Alt+R switches to the next desktop." -ForegroundColor Green

@@ -1,12 +1,14 @@
-// WarrenTool - one tray app that runs Screen Shot, Wallpaper Picker, Audio Switcher and Clipboard Manager.
+// WarrenTool - one tray app that runs Screen Shot, Wallpaper Picker, Audio Switcher, Clipboard Manager
+// and Desktop Switcher.
 // Build with install.bat (uses the C# compiler that ships with Windows; no SDK needed).
 //
-// Runs in the background with a tray icon and five global hotkeys:
+// Runs in the background with a tray icon and six global hotkeys:
 //   Ctrl+Alt+S         take a screenshot (ScreenShot.cs)
 //   Ctrl+Shift+Alt+S   copy the text or QR code in a region of the screen (ScreenShot.cs)
 //   Ctrl+Alt+W         open or close the wallpaper picker (WallpaperPicker.cs)
 //   Ctrl+Alt+O         switch to the next audio output (AudioSwitcher.cs)
 //   Ctrl+Alt+V         open or close the clipboard history (ClipboardManager.cs)
+//   Ctrl+Alt+R         switch to the next virtual desktop, even from a RustDesk session (DesktopSwitcher.cs)
 // The tray icon shows the current audio output's icon. Left-click it for the audio menu,
 // right-click it for WarrenTool's menu.
 //
@@ -32,6 +34,7 @@ using System.Windows.Threading;
 using Microsoft.Win32;
 using AudioSwitcher;
 using ClipboardManager;
+using DesktopSwitcher;
 using ScreenShot;
 using WallpaperPicker;
 using Drawing = System.Drawing;
@@ -173,10 +176,10 @@ namespace WarrenTool
 
     class TrayApp
     {
-        const int ScreenshotHotkey = 1, WallpaperHotkey = 2, AudioHotkey = 3, ClipboardHotkey = 4, TextHotkey = 5;
+        const int ScreenshotHotkey = 1, WallpaperHotkey = 2, AudioHotkey = 3, ClipboardHotkey = 4, TextHotkey = 5, DesktopHotkey = 6;
         const int WM_HOTKEY = 0x0312;
         const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_SHIFT = 0x4, MOD_NOREPEAT = 0x4000;
-        const uint VK_S = 0x53, VK_W = 0x57, VK_O = 0x4F, VK_V = 0x56;
+        const uint VK_S = 0x53, VK_W = 0x57, VK_O = 0x4F, VK_V = 0x56, VK_R = 0x52;
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunValue = "WarrenTool";   // must match $runValue in Install.ps1
 
@@ -196,6 +199,7 @@ namespace WarrenTool
         readonly History clipHistory;
         readonly Recorder clipRecorder;
         readonly ClipboardWindow clipboard;
+        readonly Desktops desktops;
         DateTime lastErrorShown = DateTime.MinValue;
 
         public TrayApp(string folder, EventWaitHandle screenshotEvent, EventWaitHandle wallpaperEvent)
@@ -213,6 +217,8 @@ namespace WarrenTool
             clipboard = new ClipboardWindow(clipHistory, message => Warn("Clipboard", message));
             new WindowInteropHelper(clipboard).EnsureHandle();
             dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(clipboard.Preload));
+            // Ctrl+Alt+R comes through its own keyboard hook (see DesktopSwitcher.cs) as well as the hotkey below
+            desktops = new Desktops(message => Warn("Desktop Switcher", message));
 
             // A message-only window receives the global hotkeys; editors and the picker come and go, this stays
             sink = new HwndSource(new HwndSourceParameters("WarrenTool.Hotkeys")
@@ -226,6 +232,8 @@ namespace WarrenTool
             bool audioKeyOk = RegisterHotKey(sink.Handle, AudioHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_O);
             bool clipboardKeyOk = RegisterHotKey(sink.Handle, ClipboardHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_V);
             bool textKeyOk = RegisterHotKey(sink.Handle, TextHotkey, MOD_CONTROL | MOD_SHIFT | MOD_ALT | MOD_NOREPEAT, VK_S);
+            // Not warned about if it's taken: the hook handles Ctrl+Alt+R before any other app's hotkey
+            RegisterHotKey(sink.Handle, DesktopHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_R);
 
             var menu = new WinForms.ContextMenuStrip
             {
@@ -339,6 +347,10 @@ namespace WarrenTool
                     ToggleClipboard();
                     handled = true;
                     break;
+                case DesktopHotkey:
+                    desktops.Next();
+                    handled = true;
+                    break;
             }
             return IntPtr.Zero;
         }
@@ -438,6 +450,7 @@ namespace WarrenTool
             UnregisterHotKey(sink.Handle, AudioHotkey);
             UnregisterHotKey(sink.Handle, ClipboardHotkey);
             UnregisterHotKey(sink.Handle, TextHotkey);
+            UnregisterHotKey(sink.Handle, DesktopHotkey);
             audio.Dispose();
             clipRecorder.Dispose();
             icon.Visible = false;

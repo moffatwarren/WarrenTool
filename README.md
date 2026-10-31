@@ -6,8 +6,9 @@ Windows tools in one lightweight tray app, installed once:
 - **Wallpaper Picker** (**`Ctrl+Alt+W`**): browse your wallpapers as a scrollable row of slanted cards and set the **Desktop Wallpaper** and **Lock Screen** with one keypress.
 - **Audio Switcher** (**`Ctrl+Alt+O`**): step to the next audio output, from the outputs you choose. The Windows counterpart of the Quickshell audio menu and `audio-output-toggle.sh` in [Linux-Setup](https://github.com/moffatwarren/Linux-Setup).
 - **Clipboard Manager** (**`Ctrl+Alt+V`**): a searchable history of the text and images you've copied, in a window in the middle of the screen. The Windows counterpart of the Quickshell clipboard menu (`ClipboardMenu.qml` and `clipboard-history.sh`) in Linux-Setup, and it looks the same.
+- **Desktop Switcher** (**`Ctrl+Alt+R`**): step to the next virtual desktop, round from the last to the first. Works from inside a RustDesk session too, and switches this PC's desktop, not the remote one's.
 
-All four run inside one background process with one tray icon, so every hotkey is always ready.
+All five run inside one background process with one tray icon, so every hotkey is always ready.
 
 ## Features
 - One tray icon, showing the icon of the current audio output (Catppuccin maroon, darker on a light taskbar). **Left-click** it for the audio menu. **Right-click** it for the menu: **Take screenshot**, **Copy text from screen**, **Open wallpaper picker**, **Random wallpaper**, **Open clipboard history**, **Clear clipboard history**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
@@ -42,6 +43,10 @@ All four run inside one background process with one tray icon, so every hotkey i
 - Copying something that is already in the history moves it to the top instead of adding it twice.
 - Skips what password managers mark as private, as Windows' own `Win+V` history does.
 - Works with remote-desktop clipboard sync (RustDesk, Remote Desktop). A screenshot you copy, or an entry you pick from the history, reaches the other PC's clipboard. If WarrenTool runs there too, it goes to the top of that PC's history as well.
+
+**Desktop Switcher**
+- Cycles through your desktops in Task View's order, with the same slide as `Ctrl+Win+→`, and the window you last used on the new desktop gets the focus.
+- Works while a RustDesk session is focused, windowed or fullscreen: `Ctrl+Alt+R` stays on this PC instead of going to the remote one.
 
 ---
 
@@ -161,14 +166,24 @@ Note: Office uses `Ctrl+Alt+V` for Paste Special. While WarrenTool is running, t
 
 ---
 
+## Desktop Switcher
+Press **`Ctrl+Alt+R`** to switch to the next virtual desktop. From the last desktop it goes back to the first. With only one desktop it does nothing (add more with `Ctrl+Win+D` or Task View).
+
+`Ctrl+Alt+R` works even when a RustDesk window has the focus. RustDesk normally captures every key and sends it to the remote PC, so other shortcuts like `Ctrl+Win+→` switch the remote PC's desktops. `Ctrl+Alt+R` is caught before RustDesk sees it: your own PC switches desktops, and the remote PC gets nothing. The keyboard focus moves with you, so after switching away from a RustDesk session your typing goes to the new desktop, not the remote PC. Only this shortcut works this way; WarrenTool's other shortcuts go to the remote PC as usual.
+
+Switching uses Windows' own virtual desktop interface, the one Task View uses. Microsoft doesn't document it and has changed it between Windows versions. WarrenTool supports Windows 11 24H2 and 25H2. If a Windows update changes it again, `Ctrl+Alt+R` shows a tray notice instead of switching.
+
+---
+
 ## Files Included
 - `install.bat` / `uninstall.bat` - Double-click to install or remove.
 - `Install.ps1` - The installer: builds the exe (including its icons), copies files, creates the shortcuts and wallpapers folder. Run with `-Uninstall` to remove.
-- `src\WarrenTool.cs` - The tray app: startup, the tray icon and menu, and the four hotkeys.
+- `src\WarrenTool.cs` - The tray app: startup, the tray icon and menu, and the hotkeys.
 - `src\ScreenShot.cs` - Screen Shot: the selection overlay, the editor, text and QR code reading.
 - `src\WallpaperPicker.cs` - Wallpaper Picker: the picker window and setting the wallpaper.
 - `src\AudioSwitcher.cs` - Audio Switcher: Windows audio devices, the audio menu, the switch popup and the tray icon's artwork.
 - `src\ClipboardManager.cs` - Clipboard Manager: watching the clipboard, the saved history and the history window.
+- `src\DesktopSwitcher.cs` - Desktop Switcher: switching virtual desktops, and the keyboard hook that catches `Ctrl+Alt+R` ahead of RustDesk.
 - `src\Set-LockScreen.ps1` - Sets the Lock Screen image (WinRT API). Installed next to the exe and called by the picker.
 - `src\app.manifest` - Makes the app DPI aware, so captures are pixel-exact on scaled and mixed-DPI monitors.
 - `assets\Lowpoly_Street.png` - Starter wallpaper, copied in when the wallpapers folder has no images.
