@@ -1,18 +1,22 @@
 <#
 .SYNOPSIS
-    Installs (or uninstalls) WarrenTool - Screen Shot, Wallpaper Picker, Audio Switcher, Clipboard Manager and Desktop Switcher in one tray app - for the current user.
+    Installs (or uninstalls) WarrenTool - Screen Shot, Wallpaper Picker, Audio Switcher, Clipboard Manager and Desktop Switcher in one tray app,
+    and the Aquarium screensaver - for the current user.
 .DESCRIPTION
     Install:
       - Removes the separate Screen Shot and Wallpaper Picker apps if they are installed
         (their "Start with Windows" setting carries over to WarrenTool)
       - Compiles src\*.cs with the C# compiler that ships with Windows (.NET Framework 4.x)
-        into %LOCALAPPDATA%\WarrenTool, along with Set-LockScreen.ps1
+        into %LOCALAPPDATA%\WarrenTool, along with Set-LockScreen.ps1, and src\Aquarium.cs with its
+        sprites into Aquarium.scr next to it
       - Adds "Screen Shot" and "Wallpaper Picker" Start Menu shortcuts
       - Creates <Pictures>\Wallpapers if needed, with a starter image if it has no images
       - Turns on "Start with Windows" on a first install; afterwards keeps whatever was chosen in the tray menu
+      - Makes the Aquarium the screensaver (after 5 minutes, locking the PC when it ends), the first time only, and only
+        if no other screensaver is set; afterwards keeps whatever was chosen in Screen Saver Settings
       - Starts the app in the tray
-    Uninstall removes the app folder (with the clipboard history), the shortcuts, the startup entry and the audio settings. Saved screenshots and
-    wallpapers are left alone.
+    Uninstall removes the app folder (with the clipboard history), the shortcuts, the startup entry, the audio settings and, if the
+    Aquarium is still the screensaver, the screensaver. Saved screenshots and wallpapers are left alone.
 .PARAMETER Uninstall
     Remove WarrenTool instead of installing it.
 #>
@@ -25,12 +29,14 @@ $ErrorActionPreference = 'Stop'
 $appName     = 'WarrenTool'
 $installDir  = Join-Path $env:LOCALAPPDATA 'WarrenTool'
 $exePath     = Join-Path $installDir 'WarrenTool.exe'
+$scrPath     = Join-Path $installDir 'Aquarium.scr'   # must match TrayApp.AquariumFile in src\WarrenTool.cs
 $programs    = [Environment]::GetFolderPath('Programs')
 $shotLink    = Join-Path $programs 'Screen Shot.lnk'
 $pickerLink  = Join-Path $programs 'Wallpaper Picker.lnk'
 $runKey      = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runValue    = 'WarrenTool'   # must match TrayApp.RunValue in src\WarrenTool.cs
-$settingsKey = 'HKCU:\Software\WarrenTool'   # Audio Switcher's per-output settings (src\AudioSwitcher.cs)
+$settingsKey = 'HKCU:\Software\WarrenTool'   # Audio Switcher's per-output settings (src\AudioSwitcher.cs), and the Aquarium's mark below
+$desktopKey  = 'HKCU:\Control Panel\Desktop' # where Windows keeps the screensaver settings
 $wallpapers  = Join-Path ([Environment]::GetFolderPath('MyPictures')) 'Wallpapers'
 $src         = Join-Path $PSScriptRoot 'src'
 
@@ -42,8 +48,42 @@ function Stop-App([string]$name) {
     }
 }
 
+# ---------- Screensaver ----------
+
+# Windows only picks up a change to these at once when it is made through SystemParametersInfo; written to the
+# registry alone, it waits for the next sign-in
+function Set-ScreenSaver([bool]$Active, [int]$Timeout = 0, [bool]$Secure = $false) {
+    if (-not ('WarrenTool.ScreenSaver' -as [type])) {
+        Add-Type -Namespace WarrenTool -Name ScreenSaver -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true)]
+public static extern bool SystemParametersInfo(int action, int param, System.IntPtr value, int winIni);
+'@
+    }
+    $update = 3   # SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+    [void][WarrenTool.ScreenSaver]::SystemParametersInfo(0x11, [int]$Active, [IntPtr]::Zero, $update)   # SPI_SETSCREENSAVEACTIVE
+    if ($Timeout -gt 0) { [void][WarrenTool.ScreenSaver]::SystemParametersInfo(0x0F, $Timeout, [IntPtr]::Zero, $update) }   # SPI_SETSCREENSAVETIMEOUT
+    if ($Active) { [void][WarrenTool.ScreenSaver]::SystemParametersInfo(0x77, [int]$Secure, [IntPtr]::Zero, $update) }   # SPI_SETSCREENSAVESECURE
+}
+
+# The screensaver Windows starts, if it is the Aquarium. Windows is given the short (8.3) form of the path, which
+# has no spaces in it to go wrong, so either form counts.
+function Test-AquariumIsScreenSaver {
+    $current = (Get-ItemProperty -Path $desktopKey -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue).'SCRNSAVE.EXE'
+    return [bool]$current -and (Test-Path -LiteralPath $current -PathType Leaf) -and
+        (Get-ShortPath $current) -eq (Get-ShortPath $scrPath)
+}
+
+function Get-ShortPath([string]$path) {
+    (New-Object -ComObject Scripting.FileSystemObject).GetFile($path).ShortPath
+}
+
 if ($Uninstall) {
     Stop-App WarrenTool
+    Stop-App Aquarium.scr
+    if ((Test-Path -LiteralPath $scrPath) -and (Test-AquariumIsScreenSaver)) {
+        Remove-ItemProperty -Path $desktopKey -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue
+        Set-ScreenSaver $false
+    }
     Remove-ItemProperty -Path $runKey -Name $runValue -ErrorAction SilentlyContinue
     Remove-Item -Path $settingsKey -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $shotLink, $pickerLink -Force -ErrorAction SilentlyContinue
@@ -219,6 +259,7 @@ foreach ($old in 'ScreenShot', 'WallpaperPicker') {
 # ---------- Build ----------
 
 Stop-App WarrenTool
+Stop-App Aquarium.scr
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
 # Kept next to the exe so the Start Menu shortcuts can point at them directly
@@ -249,6 +290,21 @@ $zxing = Join-Path $PSScriptRoot 'lib\zxing.dll'
     (Join-Path $src 'AudioSwitcher.cs') (Join-Path $src 'ClipboardManager.cs') (Join-Path $src 'DesktopSwitcher.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 
+# The Aquarium is a screensaver, which Windows starts by itself, so it is its own program rather than part of
+# WarrenTool.exe. Its sprites are embedded in it. They are named from inside their folder, which keeps their
+# hundred and more /resource: arguments short.
+Push-Location (Join-Path $PSScriptRoot 'assets\aquarium\sprites')
+try {
+    $sprites = Get-ChildItem -Filter *.png | ForEach-Object { "/resource:$($_.Name)" }
+    & $csc /nologo /target:winexe /optimize+ "/out:$scrPath" `
+        "/win32icon:$appIcon" "/win32manifest:$(Join-Path $src 'app.manifest')" `
+        /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+        $sprites (Join-Path $src 'Aquarium.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'Aquarium build failed.' }
+} finally {
+    Pop-Location
+}
+
 # The picker calls this to set the Lock Screen; it must sit next to the exe
 Copy-Item -LiteralPath (Join-Path $src 'Set-LockScreen.ps1') -Destination $installDir -Force
 Write-Host "[+] Installed to $installDir" -ForegroundColor Green
@@ -278,6 +334,26 @@ if ($firstInstall -or $startup) {
     Write-Host '[+] Starts with Windows (untick it in the tray menu to stop)' -ForegroundColor Green
 }
 
+# ---------- Aquarium screensaver ----------
+
+# Set up once, as Linux-Setup's hypridle has it: after 5 minutes, and the PC locks when it ends. The mark in
+# $settingsKey stops a reinstall from undoing a later change in Screen Saver Settings (another screensaver,
+# another wait, or none).
+$current = (Get-ItemProperty -Path $desktopKey -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue).'SCRNSAVE.EXE'
+if (Test-AquariumIsScreenSaver) {
+    Write-Host '[+] Aquarium is the screensaver (Ctrl+Alt+L shows it now)' -ForegroundColor Green
+} elseif (-not (Get-ItemProperty -Path $settingsKey -Name 'AquariumSetUp' -ErrorAction SilentlyContinue)) {
+    if (-not $current) {
+        Set-ItemProperty -Path $desktopKey -Name 'SCRNSAVE.EXE' -Value (Get-ShortPath $scrPath)
+        Set-ScreenSaver $true -Timeout 300 -Secure $true
+        Write-Host '[+] Aquarium is the screensaver: after 5 minutes, locking the PC when it ends (Ctrl+Alt+L shows it now)' -ForegroundColor Green
+    } else {
+        Write-Host "[+] Kept your screensaver ($current). To use the Aquarium, pick it in Screen Saver Settings." -ForegroundColor Green
+    }
+    New-Item -Path $settingsKey -Force | Out-Null
+    Set-ItemProperty -Path $settingsKey -Name 'AquariumSetUp' -Value 1 -Type DWord
+}
+
 # ---------- Wallpapers folder ----------
 
 New-Item -ItemType Directory -Force -Path $wallpapers | Out-Null
@@ -294,4 +370,4 @@ if ($existing.Count -eq 0) {
 
 # Start in the tray: the installer's console holds the focus, so a window shown now would lose it right away
 Start-Process -FilePath $exePath -ArgumentList '--tray'
-Write-Host "[+] $appName is running in the tray. Ctrl+Alt+S takes a screenshot, Ctrl+Shift+Alt+S copies the text or QR code in a region, Ctrl+Alt+W opens the wallpaper picker, Ctrl+Alt+O switches the audio output, Ctrl+Alt+V opens the clipboard history, Ctrl+Alt+R switches to the next desktop." -ForegroundColor Green
+Write-Host "[+] $appName is running in the tray. Ctrl+Alt+S takes a screenshot, Ctrl+Shift+Alt+S copies the text or QR code in a region, Ctrl+Alt+W opens the wallpaper picker, Ctrl+Alt+O switches the audio output, Ctrl+Alt+V opens the clipboard history, Ctrl+Alt+R switches to the next desktop, Ctrl+Alt+L shows the aquarium." -ForegroundColor Green

@@ -60,7 +60,8 @@ namespace WallpaperPicker
     {
         public List<Card> Cards;            // every image in the folder
         public volatile Card[] Shown;       // the ones matching the filter, in the same order
-        public bool[] Requested;
+        public bool[] Requested;            // its thumbnail is loading or on show (set and read under Lock)
+        public bool[] Cached;               // its thumbnail cache file has been made, or checked for
         public bool Retired;                // replaced by a rescan: its loaders stop (set and read under Lock)
         public readonly object Lock = new object();
     }
@@ -78,6 +79,12 @@ namespace WallpaperPicker
         const double Step = Strip + Gap;
         const double SelectedExtra = 260;   // how much wider the selected card gets
         const double Parallax = 34;         // how far an image drifts inside its card
+
+        // Thumbnails in memory: the cards that fit across the panel, Ahead more past each end so the
+        // next few steps are already filled in, and Spare more before the farthest are let go.
+        // The rest reload from the thumbnail cache when the carousel comes back to them.
+        const int Ahead = 4;
+        const int Spare = 4;
 
         // Motion
         const double Spring = 18;           // scroll stiffness (critically damped)
@@ -107,7 +114,7 @@ namespace WallpaperPicker
 
         public readonly string Folder;
 
-        Batch batch = new Batch { Cards = new List<Card>(), Shown = new Card[0], Requested = new bool[0] };
+        Batch batch = new Batch { Cards = new List<Card>(), Shown = new Card[0], Requested = new bool[0], Cached = new bool[0] };
         // The cards in the carousel. "selected" indexes into these, not into every card in the folder.
         Card[] cards { get { return batch.Shown; } }
 
@@ -118,6 +125,7 @@ namespace WallpaperPicker
         readonly Stopwatch clock = Stopwatch.StartNew();
         readonly double dpiScale;
         readonly int decodeHeight;
+        readonly int thumbWidth;            // the widest a card shows of an image that is decodeHeight tall
 
         Border shell;
         int selected;
@@ -132,6 +140,7 @@ namespace WallpaperPicker
         int fadeId;
         int wheelAccum;
         volatile int focusIndex;
+        volatile int reach = 10;    // places either side of the focus that are filled in (set by Layout)
         DateTime hiddenAt = DateTime.MinValue;
         FileSystemWatcher watcher;
         readonly DispatcherTimer rescan = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
@@ -154,6 +163,8 @@ namespace WallpaperPicker
 
             using (var g = Drawing.Graphics.FromHwnd(IntPtr.Zero)) dpiScale = g.DpiY / 96.0;
             decodeHeight = (int)(SelectedH * dpiScale);
+            // The selected card, plus its image's overhang either side
+            thumbWidth = (int)Math.Ceiling((Strip + SelectedExtra + SelectedH * SlantRatio + 2 * Parallax) * dpiScale);
 
             Content = BuildChrome();
 
@@ -161,7 +172,15 @@ namespace WallpaperPicker
             PreviewKeyDown += OnKeyDown;
             PreviewMouseWheel += OnWheel;
             Deactivated += delegate { Dismiss(); };
-            IsVisibleChanged += delegate { if (!IsVisible) hiddenAt = DateTime.UtcNow; };
+            IsVisibleChanged += delegate
+            {
+                if (IsVisible) return;
+                hiddenAt = DateTime.UtcNow;
+                Trim();
+                // The images let go while browsing are only freed by a garbage collection, and a tray
+                // app sitting idle allocates nothing to set one off
+                Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() => GC.Collect()));
+            };
             canvas.SizeChanged += delegate { Layout(); };
             rescan.Tick += delegate { rescan.Stop(); Refresh(); };
         }
@@ -281,7 +300,7 @@ namespace WallpaperPicker
             selected = FindCurrentWallpaper(files);
             offset = selected;
             velocity = 0;
-            focusIndex = selected;
+            LoadAround(selected);
             hovered = null;
             UpdateSelectionVisuals();
 
@@ -458,7 +477,7 @@ namespace WallpaperPicker
             selected = Math.Max(0, Array.IndexOf(cards, current));
             offset = selected;
             velocity = 0;
-            focusIndex = selected;
+            LoadAround(selected);
             UpdateSelectionVisuals();
             Layout();
         }
@@ -471,10 +490,14 @@ namespace WallpaperPicker
             foreach (var c in batch.Cards) old[c.File] = c;
             // Stop the old batch's loaders before its cards are renumbered below: they look cards up
             // in their own Requested by Index, and a new index can be past the end of it
-            lock (batch.Lock) batch.Retired = true;
+            lock (batch.Lock)
+            {
+                batch.Retired = true;
+                Monitor.PulseAll(batch.Lock);   // wakes the ones waiting for work, so they see it
+            }
 
             canvas.Children.Clear();
-            var next = new Batch { Cards = new List<Card>(), Requested = new bool[files.Count] };
+            var next = new Batch { Cards = new List<Card>(), Requested = new bool[files.Count], Cached = new bool[files.Count] };
             var thumbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < files.Count; i++)
             {
@@ -493,6 +516,7 @@ namespace WallpaperPicker
             next.Shown = next.Cards.ToArray();
             batch = next;
             PruneThumbnails(thumbs);
+            Trim();     // the kept cards' images, if they now sit far from the focus
 
             for (int t = 0; t < 2; t++)
             {
@@ -601,7 +625,7 @@ namespace WallpaperPicker
             index = Math.Max(0, Math.Min(cards.Length - 1, index));
             if (index == selected) return;
             selected = index;
-            focusIndex = index;
+            LoadAround(index);
             UpdateSelectionVisuals();
             StartAnimation();
         }
@@ -673,6 +697,7 @@ namespace WallpaperPicker
                 {
                     animating = false;
                     CompositionTarget.Rendering -= OnFrame;
+                    Trim();     // what a jump scrolled away from
                 }
             }
             Layout();
@@ -684,6 +709,14 @@ namespace WallpaperPicker
             if (w <= 0) return;
             double center = w / 2, middle = h / 2;
             double intro = introPending ? 0 : clock.Elapsed.TotalSeconds - shownAt;
+
+            // Enough cards filled in to cover this width (it only changes with the monitor)
+            int fill = (int)Math.Ceiling(w / Step / 2) + Ahead;
+            if (fill != reach)
+            {
+                reach = fill;
+                LoadAround(focusIndex);
+            }
 
             // The two cards around the scroll position share the selected size (their weights sum to 1),
             // so the growth slides smoothly from card to card and the centered one stays centered.
@@ -786,38 +819,97 @@ namespace WallpaperPicker
 
         // ---------- Thumbnails ----------
 
-        // Index in the batch of the not-yet-requested card nearest position "from" in the list, or -1
-        static int NextToLoad(Batch b, IList<Card> list, int from)
+        // Points the loaders at a place in the carousel: they fill in the cards around it, and the
+        // cards farthest from it let go of their images
+        void LoadAround(int index)
         {
-            int f = Math.Max(0, Math.Min(from, list.Count - 1));
-            for (int r = 0; r < list.Count; r++)
+            focusIndex = index;
+            Trim();
+            lock (batch.Lock) Monitor.PulseAll(batch.Lock);
+        }
+
+        // Keeps as many images as the loaders fill in, plus Spare, and lets go of the rest. Distance
+        // is to the focus or to where the carousel is now, whichever is nearer, so the cards on screen
+        // stay filled in while a long jump scrolls away from them. Cards the filter has hidden count
+        // as farthest of all.
+        void Trim()
+        {
+            var shown = cards;
+            int f = focusIndex, at = (int)Math.Round(offset);
+            var place = new Dictionary<Card, int>();
+            for (int i = 0; i < shown.Length; i++) place[shown[i]] = Math.Min(Math.Abs(i - f), Math.Abs(i - at));
+            var far = batch.Cards
+                .Where(c => c.Image.Source != null)
+                .OrderBy(c => { int d; return place.TryGetValue(c, out d) ? d : int.MaxValue; })
+                .Skip(2 * reach + 1 + Spare)
+                .ToList();
+            if (far.Count == 0) return;
+            lock (batch.Lock)
+                foreach (var c in far)
+                {
+                    c.Image.Source = null;
+                    batch.Requested[c.Index] = false;
+                }
+        }
+
+        // Index in the batch of the not-yet-requested card nearest position "from" in the list,
+        // at most "reach" places away, or -1
+        static int NextToLoad(Batch b, Card[] list, int from, int reach)
+        {
+            int f = Math.Max(0, Math.Min(from, list.Length - 1));
+            for (int r = 0; r <= reach; r++)
             {
-                if (f + r < list.Count && !b.Requested[list[f + r].Index]) return list[f + r].Index;
+                if (f + r < list.Length && !b.Requested[list[f + r].Index]) return list[f + r].Index;
                 if (f - r >= 0 && !b.Requested[list[f - r].Index]) return list[f - r].Index;
             }
             return -1;
         }
 
-        // Always decode the not-yet-loaded image nearest the current selection, leaving the
-        // cards the filter has hidden until last.
-        // Stops when everything is loaded or the batch has been replaced by a rescan.
+        // Index of the card nearest "from" in the batch whose cache file hasn't been checked for, or -1
+        static int NextToCache(Batch b, int from)
+        {
+            for (int r = 0; r < b.Cards.Count; r++)
+            {
+                if (from + r < b.Cards.Count && !b.Cached[from + r]) return from + r;
+                if (from - r >= 0 && !b.Cached[from - r]) return from - r;
+            }
+            return -1;
+        }
+
+        // Always decode the not-yet-loaded image nearest the current selection. With the cards around
+        // it filled in, makes sure every other card is in the thumbnail cache, so it loads quickly
+        // when the carousel gets to it, then waits for the focus to move.
+        // Stops when the batch has been replaced by a rescan.
         void LoadLoop(Batch b)
         {
             while (true)
             {
                 int idx;
+                bool show;
                 lock (b.Lock)
                 {
-                    if (b.Retired) return;
-                    var shown = b.Shown;
-                    int f = focusIndex;
-                    idx = NextToLoad(b, shown, f);
-                    if (idx < 0) idx = NextToLoad(b, b.Cards, f < shown.Length ? shown[f].Index : 0);
-                    if (idx < 0) return;
-                    b.Requested[idx] = true;
+                    while (true)
+                    {
+                        if (b.Retired) return;
+                        var shown = b.Shown;
+                        int f = focusIndex;
+                        idx = NextToLoad(b, shown, f, reach);
+                        show = idx >= 0;
+                        if (!show) idx = NextToCache(b, f < shown.Length ? shown[f].Index : 0);
+                        if (idx >= 0) break;
+                        Monitor.Wait(b.Lock);
+                    }
+                    if (show) b.Requested[idx] = true;
+                    b.Cached[idx] = true;
                 }
 
                 var card = b.Cards[idx];
+                if (!show)
+                {
+                    string thumb = ThumbPath(card);
+                    if (!System.IO.File.Exists(thumb)) MakeThumbnail(card, thumb);
+                    continue;
+                }
                 // Null for an unsupported/corrupt file: the placeholder with the file name stays visible
                 var bmp = LoadThumbnail(card);
                 if (bmp != null)
@@ -841,9 +933,34 @@ namespace WallpaperPicker
                 var cached = Decode(thumb);
                 if (cached != null) return cached;
             }
+            return MakeThumbnail(card, thumb);
+        }
+
+        BitmapSource MakeThumbnail(Card card, string thumb)
+        {
             var bmp = Decode(card.File);
-            if (bmp != null) SaveThumbnail(bmp, thumb);
+            if (bmp == null) return null;
+            bmp = Crop(bmp);
+            SaveThumbnail(bmp, thumb);
             return bmp;
+        }
+
+        // The middle of the image, as wide as a card ever shows it. The pixels are copied out so the
+        // full decode can go: a CroppedBitmap would keep it alive behind the crop.
+        BitmapSource Crop(BitmapSource bmp)
+        {
+            if (bmp.PixelWidth <= thumbWidth) return bmp;
+            var source = new FormatConvertedBitmap(bmp, PixelFormats.Bgr32, null, 0);
+            int h = bmp.PixelHeight, stride = thumbWidth * 4, size = stride * h;
+            IntPtr pixels = Marshal.AllocHGlobal(size);
+            try
+            {
+                source.CopyPixels(new Int32Rect((bmp.PixelWidth - thumbWidth) / 2, 0, thumbWidth, h), pixels, size, stride);
+                var cropped = BitmapSource.Create(thumbWidth, h, 96, 96, PixelFormats.Bgr32, null, pixels, size, stride);
+                cropped.Freeze();
+                return cropped;
+            }
+            finally { Marshal.FreeHGlobal(pixels); }
         }
 
         BitmapSource Decode(string file)
@@ -866,10 +983,10 @@ namespace WallpaperPicker
             catch { return null; }
         }
 
-        // Named for the file, its stamp and the decode size, so a changed file or DPI misses the cache
+        // Named for the file, its stamp and the thumbnail size, so a changed file or DPI misses the cache
         string ThumbPath(Card card)
         {
-            string key = card.File.ToLowerInvariant() + "|" + card.Stamp + "|" + decodeHeight;
+            string key = card.File.ToLowerInvariant() + "|" + card.Stamp + "|" + decodeHeight + "|" + thumbWidth;
             using (var sha = System.Security.Cryptography.SHA1.Create())
             {
                 var hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(key));

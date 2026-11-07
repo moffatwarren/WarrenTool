@@ -1,14 +1,15 @@
 // WarrenTool - one tray app that runs Screen Shot, Wallpaper Picker, Audio Switcher, Clipboard Manager
-// and Desktop Switcher.
+// and Desktop Switcher, and starts the Aquarium screensaver.
 // Build with install.bat (uses the C# compiler that ships with Windows; no SDK needed).
 //
-// Runs in the background with a tray icon and six global hotkeys:
+// Runs in the background with a tray icon and seven global hotkeys:
 //   Ctrl+Alt+S         take a screenshot (ScreenShot.cs)
 //   Ctrl+Shift+Alt+S   copy the text or QR code in a region of the screen (ScreenShot.cs)
 //   Ctrl+Alt+W         open or close the wallpaper picker (WallpaperPicker.cs)
 //   Ctrl+Alt+O         switch to the next audio output (AudioSwitcher.cs)
 //   Ctrl+Alt+V         open or close the clipboard history (ClipboardManager.cs)
 //   Ctrl+Alt+R         switch to the next virtual desktop, even from a RustDesk session (DesktopSwitcher.cs)
+//   Ctrl+Alt+L         show the aquarium now, locking the PC when it ends (Aquarium.cs, its own Aquarium.scr)
 // The tray icon shows the current audio output's icon. Left-click it for the audio menu,
 // right-click it for WarrenTool's menu.
 //
@@ -176,18 +177,28 @@ namespace WarrenTool
 
     class TrayApp
     {
-        const int ScreenshotHotkey = 1, WallpaperHotkey = 2, AudioHotkey = 3, ClipboardHotkey = 4, TextHotkey = 5, DesktopHotkey = 6;
-        const int WM_HOTKEY = 0x0312;
+        const int ScreenshotHotkey = 1, WallpaperHotkey = 2, AudioHotkey = 3, ClipboardHotkey = 4, TextHotkey = 5, DesktopHotkey = 6, AquariumHotkey = 7;
+        const int WM_HOTKEY = 0x0312, WM_SYSCOMMAND = 0x0112, SC_SCREENSAVE = 0xF140;
         const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_SHIFT = 0x4, MOD_NOREPEAT = 0x4000;
-        const uint VK_S = 0x53, VK_W = 0x57, VK_O = 0x4F, VK_V = 0x56, VK_R = 0x52;
+        const uint VK_S = 0x53, VK_W = 0x57, VK_O = 0x4F, VK_V = 0x56, VK_R = 0x52, VK_L = 0x4C;
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunValue = "WarrenTool";   // must match $runValue in Install.ps1
+        const string AquariumFile = "Aquarium.scr";   // must match $scrPath in Install.ps1
 
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
         [DllImport("user32.dll")]
         static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        [DllImport("user32.dll")]
+        static extern IntPtr GetDesktopWindow();
+
+        [DllImport("user32.dll")]
+        static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        static extern uint GetLongPathName(string shortPath, System.Text.StringBuilder longPath, uint size);
 
         readonly Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
         readonly HwndSource sink;
@@ -234,6 +245,7 @@ namespace WarrenTool
             bool textKeyOk = RegisterHotKey(sink.Handle, TextHotkey, MOD_CONTROL | MOD_SHIFT | MOD_ALT | MOD_NOREPEAT, VK_S);
             // Not warned about if it's taken: the hook handles Ctrl+Alt+R before any other app's hotkey
             RegisterHotKey(sink.Handle, DesktopHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_R);
+            bool aquariumKeyOk = RegisterHotKey(sink.Handle, AquariumHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_L);
 
             var menu = new WinForms.ContextMenuStrip
             {
@@ -266,6 +278,10 @@ namespace WarrenTool
                 ShortcutKeyDisplayString = "Ctrl+Alt+V",
             });
             menu.Items.Add("Clear clipboard history", null, delegate { ClearClipboardHistory(); });
+            menu.Items.Add(new WinForms.ToolStripMenuItem("Lock with aquarium", null, delegate { ShowAquarium(); })
+            {
+                ShortcutKeyDisplayString = "Ctrl+Alt+L",
+            });
             menu.Items.Add(new WinForms.ToolStripSeparator());
             menu.Items.Add("Open screenshots folder", null, delegate { Capturer.OpenFolder(); });
             menu.Items.Add("Open wallpapers folder", null, delegate { OpenWallpapersFolder(); });
@@ -304,6 +320,7 @@ namespace WarrenTool
             if (!wallpaperKeyOk) taken.Add("Ctrl+Alt+W");
             if (!audioKeyOk) taken.Add("Ctrl+Alt+O");
             if (!clipboardKeyOk) taken.Add("Ctrl+Alt+V");
+            if (!aquariumKeyOk) taken.Add("Ctrl+Alt+L");
             if (taken.Count > 0)
                 Warn("WarrenTool", string.Join(" and ", taken) + (taken.Count == 1 ? " is" : " are")
                     + " already used by another app. Use the tray icon instead.");
@@ -349,6 +366,10 @@ namespace WarrenTool
                     break;
                 case DesktopHotkey:
                     desktops.Next();
+                    handled = true;
+                    break;
+                case AquariumHotkey:
+                    ShowAquarium();
                     handled = true;
                     break;
             }
@@ -425,6 +446,33 @@ namespace WarrenTool
             if (answer == MessageBoxResult.Yes) clipHistory.Clear();
         }
 
+        // ---------- Aquarium ----------
+
+        // Asks Windows to start the screensaver now. It then runs exactly as it does after the idle wait: Windows
+        // knows it is running, so the wait can't start a second one over it, and it locks the PC when it ends
+        // (Aquarium.cs). Only when it is the Aquarium: Ctrl+Alt+L bringing up some other screensaver would be
+        // a surprise.
+        void ShowAquarium()
+        {
+            string current = null;
+            using (var key = Registry.CurrentUser.OpenSubKey(@"Control Panel\Desktop"))
+                if (key != null) current = key.GetValue("SCRNSAVE.EXE") as string;
+            string ours = IOPath.Combine(IOPath.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), AquariumFile);
+            if (current == null || !File.Exists(ours) || !string.Equals(LongPath(current), ours, StringComparison.OrdinalIgnoreCase))
+            {
+                Warn("Aquarium", "The aquarium isn't your screensaver. Choose Aquarium in Screen Saver Settings, then try again.");
+                return;
+            }
+            PostMessage(GetDesktopWindow(), WM_SYSCOMMAND, new IntPtr(SC_SCREENSAVE), IntPtr.Zero);
+        }
+
+        // Install.ps1 gives Windows the screensaver's short (8.3) path
+        static string LongPath(string path)
+        {
+            var full = new System.Text.StringBuilder(1024);
+            return GetLongPathName(path, full, (uint)full.Capacity) > 0 ? IOPath.GetFullPath(full.ToString()) : path;
+        }
+
         // ---------- App ----------
 
         static bool IsStartupEnabled()
@@ -451,6 +499,7 @@ namespace WarrenTool
             UnregisterHotKey(sink.Handle, ClipboardHotkey);
             UnregisterHotKey(sink.Handle, TextHotkey);
             UnregisterHotKey(sink.Handle, DesktopHotkey);
+            UnregisterHotKey(sink.Handle, AquariumHotkey);
             audio.Dispose();
             clipRecorder.Dispose();
             icon.Visible = false;

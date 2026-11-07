@@ -7,11 +7,12 @@ Windows tools in one lightweight tray app, installed once:
 - **Audio Switcher** (**`Ctrl+Alt+O`**): step to the next audio output, from the outputs you choose. The Windows counterpart of the Quickshell audio menu and `audio-output-toggle.sh` in [Linux-Setup](https://github.com/moffatwarren/Linux-Setup).
 - **Clipboard Manager** (**`Ctrl+Alt+V`**): a searchable history of the text and images you've copied, in a window in the middle of the screen. The Windows counterpart of the Quickshell clipboard menu (`ClipboardMenu.qml` and `clipboard-history.sh`) in Linux-Setup, and it looks the same.
 - **Desktop Switcher** (**`Ctrl+Alt+R`**): step to the next virtual desktop, round from the last to the first. Works from inside a RustDesk session too, and switches this PC's desktop, not the remote one's.
+- **Aquarium** (**`Ctrl+Alt+L`**): a Catppuccin pixel-art fish tank screensaver, with a shark, stretched across all your monitors as one tank. It starts after 5 minutes idle, and the PC locks when you come back. The Windows counterpart of the aquarium lock screen in Linux-Setup.
 
-All five run inside one background process with one tray icon, so every hotkey is always ready.
+All five tools run inside one background process with one tray icon, so every hotkey is always ready. The Aquarium is a screensaver, which Windows starts by itself, so it is its own small program; the tray app gives it `Ctrl+Alt+L`.
 
 ## Features
-- One tray icon, showing the icon of the current audio output (Catppuccin maroon, darker on a light taskbar). **Left-click** it for the audio menu. **Right-click** it for the menu: **Take screenshot**, **Copy text from screen**, **Open wallpaper picker**, **Random wallpaper**, **Open clipboard history**, **Clear clipboard history**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
+- One tray icon, showing the icon of the current audio output (Catppuccin maroon, darker on a light taskbar). **Left-click** it for the audio menu. **Right-click** it for the menu: **Take screenshot**, **Copy text from screen**, **Open wallpaper picker**, **Random wallpaper**, **Open clipboard history**, **Clear clipboard history**, **Lock with aquarium**, **Open screenshots folder**, **Open wallpapers folder**, **Start with Windows** and **Exit**.
 - Catppuccin throughout.
 - If something goes wrong, WarrenTool keeps running: a tray notice says so, and the details go in `%LOCALAPPDATA%\WarrenTool\error.log`.
 - Native Windows: nothing to install first, no SDKs or Python. The one third-party library (ZXing.Net, for QR codes) is in the repo and gets built into the exe.
@@ -28,7 +29,7 @@ All five run inside one background process with one tray icon, so every hotkey i
 - Just start typing to filter the wallpapers by file name.
 - Sets the Desktop wallpaper and Lock Screen together, or the Desktop only.
 - Picks up new, changed and removed images in the folder automatically.
-- Loads its thumbnails in the background when WarrenTool starts, and keeps a card-sized copy of each in `%LOCALAPPDATA%\WarrenTool\Thumbnails`, so the picker opens already filled in.
+- Loads its thumbnails in the background when WarrenTool starts, and keeps a card-sized copy of each in `%LOCALAPPDATA%\WarrenTool\Thumbnails`, so the picker opens already filled in. Only the cards around the one on show are held in memory; the rest reload from those copies as you scroll to them.
 - Supports `.jpg`, `.jpeg`, `.png`, `.bmp`, and `.webp` images.
 
 **Audio Switcher**
@@ -48,6 +49,12 @@ All five run inside one background process with one tray icon, so every hotkey i
 - Cycles through your desktops in Task View's order, with the same slide as `Ctrl+Win+→`, and the window you last used on the new desktop gets the focus.
 - Works while a RustDesk session is focused, windowed or fullscreen: `Ctrl+Alt+R` stays on this PC instead of going to the remote one.
 
+**Aquarium**
+- The same tank as Linux-Setup's: clownfish, tangs, angelfish, goldfish, pufferfish, bettas, schools of tetras, jellyfish, a crab, swaying weed, corals and a chest venting bubbles, all from the same sprites.
+- One tank across every monitor, not one per monitor: fish swim off one screen and onto the next.
+- A shark patrols the whole width, swims out of the tank and comes back later at another depth. Fish that find themselves near it dart away, and schools scatter together.
+- Crisp pixels at any resolution: the tank is scaled up by a whole number (5× on 1440p, 4× on 1080p).
+
 ---
 
 ## Install
@@ -58,6 +65,7 @@ All five run inside one background process with one tray icon, so every hotkey i
    - adds **Screen Shot** and **Wallpaper Picker** shortcuts to the Start Menu
    - creates **`Pictures\Wallpapers`** if it doesn't exist, adding `Lowpoly_Street.png` as a starter image when it has no images (OneDrive-redirected Pictures folders are detected automatically)
    - turns on **Start with Windows** (first install only; after that the tray menu setting is kept)
+   - makes the **Aquarium** your screensaver, after 5 minutes and locking the PC when it ends (first install only, and only if you don't already have a screensaver; after that your Screen Saver Settings are kept)
    - starts the app in the tray
 3. Put your images in **`Pictures\Wallpapers`**.
 
@@ -65,7 +73,7 @@ Once installed, the repo folder can be moved or deleted. To update, pull the lat
 
 > Windows 11 hides new tray icons in the `^` overflow. Drag the icon onto the taskbar to keep it visible.
 
-To remove it, double-click **`uninstall.bat`**. This removes the app, the Start Menu shortcuts, the startup entry and the audio settings. Saved screenshots and your wallpapers are not touched.
+To remove it, double-click **`uninstall.bat`**. This removes the app, the Start Menu shortcuts, the startup entry, the audio settings and, if the Aquarium is still your screensaver, the screensaver. Saved screenshots and your wallpapers are not touched.
 
 ---
 
@@ -175,6 +183,21 @@ Switching uses Windows' own virtual desktop interface, the one Task View uses. M
 
 ---
 
+## Aquarium
+The aquarium starts by itself after 5 minutes without input. Press **`Ctrl+Alt+L`** (or choose **Lock with aquarium** from the tray menu) to start it straight away, as `SUPER+L` does on Linux.
+
+Any key, mouse button or mouse movement ends it, and the Windows lock screen comes up: sign in with your PIN, Windows Hello or password as usual. The first second after it starts doesn't count, so letting go of `Ctrl+Alt+L` doesn't end it.
+
+**Why isn't it the lock screen itself?** On Linux the aquarium is the lock screen, with the password box over the fish. Windows doesn't let apps replace its lock screen, so here the aquarium is a screensaver with **On resume, display logon screen** ticked: it plays while you're away, and Windows' own lock screen checks your password. The PC is just as locked; only the sign-in happens on Windows' screen rather than over the tank.
+
+To change how long Windows waits, or to stop it locking, open **Screen Saver Settings** (search for "screen saver" in Start, or run `control desk.cpl,,@screensaver`). The aquarium is listed there as **Aquarium**, with a preview. Choosing **(None)** turns it off; `Ctrl+Alt+L` then shows a notice instead.
+
+- It covers every monitor with one tank, scaled to fit the shortest one. Monitors of different heights see the parts of the tank they cover.
+- Windows doesn't start a screensaver while a video is playing or a game is running full screen.
+- Your power plan's **Turn off my screen after** still applies, so the screens go dark while the aquarium is up if that comes first. Make it longer than the screensaver wait to see the fish for a while.
+
+---
+
 ## Files Included
 - `install.bat` / `uninstall.bat` - Double-click to install or remove.
 - `Install.ps1` - The installer: builds the exe (including its icons), copies files, creates the shortcuts and wallpapers folder. Run with `-Uninstall` to remove.
@@ -184,6 +207,8 @@ Switching uses Windows' own virtual desktop interface, the one Task View uses. M
 - `src\AudioSwitcher.cs` - Audio Switcher: Windows audio devices, the audio menu, the switch popup and the tray icon's artwork.
 - `src\ClipboardManager.cs` - Clipboard Manager: watching the clipboard, the saved history and the history window.
 - `src\DesktopSwitcher.cs` - Desktop Switcher: switching virtual desktops, and the keyboard hook that catches `Ctrl+Alt+R` ahead of RustDesk.
+- `src\Aquarium.cs` - Aquarium: the tank, the fish and the shark, and the screensaver's windows. Built into its own `Aquarium.scr`, not into the exe.
+- `assets\aquarium\sprites` - The Aquarium's pixel art, embedded in `Aquarium.scr`. Made by `assets\aquarium\make_sprites.py` (Python, only needed to change the art), a copy of Linux-Setup's with the shark added.
 - `src\Set-LockScreen.ps1` - Sets the Lock Screen image (WinRT API). Installed next to the exe and called by the picker.
 - `src\app.manifest` - Makes the app DPI aware, so captures are pixel-exact on scaled and mixed-DPI monitors.
 - `assets\Lowpoly_Street.png` - Starter wallpaper, copied in when the wallpapers folder has no images.
