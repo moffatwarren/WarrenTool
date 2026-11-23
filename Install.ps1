@@ -14,15 +14,21 @@
       - Turns on "Start with Windows" on a first install; afterwards keeps whatever was chosen in the tray menu
       - Makes the Aquarium the screensaver (after 5 minutes, locking the PC when it ends), the first time only, and only
         if no other screensaver is set; afterwards keeps whatever was chosen in Screen Saver Settings
+      - If the Herdr app is installed, puts Pip in it (herdr-app\mods\pip, and main-pip, the layout with a spot for it)
       - Starts the app in the tray
-    Uninstall removes the app folder (with the clipboard history), the shortcuts, the startup entry, the audio settings and, if the
-    Aquarium is still the screensaver, the screensaver. Saved screenshots and wallpapers are left alone.
+    Uninstall removes the app folder (with the clipboard history), the shortcuts, the startup entry, the audio settings,
+    Pip from Herdr and, if the Aquarium is still the screensaver, the screensaver. Saved screenshots and wallpapers are left alone.
 .PARAMETER Uninstall
     Remove WarrenTool instead of installing it.
+.PARAMETER HerdrHome
+    The Herdr app's folder, where Pip goes. Herdr's own default, ~\.config\herdr-app, unless given.
 #>
 
 [CmdletBinding()]
-param([switch]$Uninstall)
+param(
+    [switch]$Uninstall,
+    [string]$HerdrHome = (Join-Path $env:USERPROFILE '.config\herdr-app')
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -77,6 +83,97 @@ function Get-ShortPath([string]$path) {
     (New-Object -ComObject Scripting.FileSystemObject).GetFile($path).ShortPath
 }
 
+# ---------- Pip in the Herdr app ----------
+
+# Pip is Linux-Setup's critter under Herdr's agents list: it knocks when an agent needs you and dances when one
+# is done. It lives in main-pip, a copy of Herdr's main layout with a block for it, because Herdr replaces its
+# own layouts on every start. Only Pip's named files are copied: the rest of $HerdrHome is Herdr's, and Herdr
+# writes files of its own into every mod folder. WarrenTool's AwayMarker (src\WarrenTool.cs) lets it nap.
+$herdrSrc = Join-Path $PSScriptRoot 'herdr-app'
+$pipDir = Join-Path $HerdrHome 'mods\pip'
+$pipLayout = Join-Path $HerdrHome 'layouts\main-pip.json'
+
+function Find-HerdrApp {
+    $cmd = Get-Command herdr-app.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    $default = Join-Path $env:LOCALAPPDATA 'Programs\herdr-app\herdr-app.exe'   # where Herdr's installer puts it
+    if (Test-Path -LiteralPath $default -PathType Leaf) { return $default }
+    return $null
+}
+
+# Runs `herdr-app <arguments>` against the window using $HerdrHome and returns what it printed, or $null if it
+# failed, as it does when Herdr isn't open. herdr-app.exe is a windowed program, which PowerShell neither waits
+# for nor reads from, so it is started by hand.
+function Invoke-HerdrApp([string]$exe, [string[]]$arguments) {
+    $start = New-Object System.Diagnostics.ProcessStartInfo $exe
+    $start.Arguments = ($arguments | ForEach-Object { '"' + $_ + '"' }) -join ' '   # none has a quote or ends in \
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.EnvironmentVariables['HERDR_APP_HOME'] = $HerdrHome
+    try {
+        $p = [System.Diagnostics.Process]::Start($start)
+        $out = $p.StandardOutput.ReadToEndAsync()
+        $null = $p.StandardError.ReadToEndAsync()   # read too, so a full pipe can't hold it up
+        if (-not $p.WaitForExit(15000)) { $p.Kill(); return $null }
+        if ($p.ExitCode -ne 0) { return $null }
+        return $out.Result
+    } catch {
+        return $null
+    }
+}
+
+# The layout the open Herdr window shows, or $null when Herdr isn't open
+function Get-HerdrLayout([string]$exe) {
+    $status = Invoke-HerdrApp $exe @('status')
+    if (-not $status) { return $null }
+    try { return ($status | ConvertFrom-Json).layout } catch { return $null }
+}
+
+function Install-Pip {
+    $exe = Find-HerdrApp
+    if (-not $exe) {
+        Write-Host '[ ] The Herdr app is not installed, so Pip was skipped (run install.bat again once it is)' -ForegroundColor DarkGray
+        return
+    }
+    New-Item -ItemType Directory -Force -Path $pipDir, (Split-Path $pipLayout) | Out-Null
+    Copy-Item -LiteralPath (Join-Path $herdrSrc 'mods\pip\main.js'), (Join-Path $herdrSrc 'mods\pip\mod.json') -Destination $pipDir -Force
+    Copy-Item -LiteralPath (Join-Path $herdrSrc 'layouts\main-pip.json') -Destination $pipLayout -Force
+
+    # Herdr keeps the layout it shows in its shared.json. That file is Herdr's: once Herdr has written it, it
+    # is never written here. An open Herdr still on its stock main is switched to main-pip; any other choice
+    # is left alone.
+    $shown = Get-HerdrLayout $exe
+    $shared = Join-Path $HerdrHome 'shared.json'
+    if ($shown -eq 'main') {
+        if ($null -ne (Invoke-HerdrApp $exe @('do', 'layout.switch', '--name', 'main-pip'))) { $shown = 'main-pip' }
+    } elseif (-not $shown -and -not (Test-Path -LiteralPath $shared)) {
+        # Herdr has never run: its first start shows main-pip. Herdr keeps the key and adds its own.
+        [IO.File]::WriteAllText($shared, "{`"layout`":`"main-pip`"}`n")   # UTF-8 without a BOM, which Herdr would reject
+        $shown = 'main-pip'
+    }
+    if ($shown -eq 'main-pip') {
+        Write-Host '[+] Pip is in Herdr, under the agents list' -ForegroundColor Green
+    } elseif ($shown) {
+        Write-Host "[+] Pip is in Herdr's main-pip layout (Herdr is showing $shown; Ctrl+Shift+L switches layouts)" -ForegroundColor Green
+    } else {
+        Write-Host '[+] Pip is in Herdr. Herdr is closed, so it is still on its own layout: open it and press Ctrl+Shift+L until Pip shows up, or run install.bat again with Herdr open.' -ForegroundColor Green
+    }
+}
+
+function Uninstall-Pip {
+    if (-not ((Test-Path -LiteralPath $pipDir) -or (Test-Path -LiteralPath $pipLayout))) { return }
+    # Off main-pip first, while its files are still there to switch from
+    $exe = Find-HerdrApp
+    if ($exe -and (Get-HerdrLayout $exe) -eq 'main-pip') {
+        Invoke-HerdrApp $exe @('do', 'layout.switch', '--name', 'main') | Out-Null
+    }
+    Remove-Item -LiteralPath $pipDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pipLayout -Force -ErrorAction SilentlyContinue
+    Write-Host '[+] Removed Pip from Herdr' -ForegroundColor Green
+}
+
 if ($Uninstall) {
     Stop-App WarrenTool
     Stop-App Aquarium.scr
@@ -88,6 +185,7 @@ if ($Uninstall) {
     Remove-Item -Path $settingsKey -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $shotLink, $pickerLink -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    Uninstall-Pip
     Write-Host "[+] $appName uninstalled. Saved screenshots and your wallpapers in $wallpapers were not touched." -ForegroundColor Green
     return
 }
@@ -364,6 +462,15 @@ if ($existing.Count -eq 0) {
     Write-Host "[+] Added a starter wallpaper to $wallpapers" -ForegroundColor Green
 } else {
     Write-Host "[+] Wallpaper folder: $wallpapers ($($existing.Count) images)" -ForegroundColor Green
+}
+
+# ---------- Pip in the Herdr app ----------
+
+# A warning, never a stopped install: everything else is already in place
+try {
+    Install-Pip
+} catch {
+    Write-Host "[!] Pip could not be set up in Herdr: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
 # ---------- Launch ----------

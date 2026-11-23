@@ -8,6 +8,7 @@ Windows tools in one lightweight tray app, installed once:
 - **Clipboard Manager** (**`Ctrl+Alt+V`**): a searchable history of the text and images you've copied, in a window in the middle of the screen. The Windows counterpart of the Quickshell clipboard menu (`ClipboardMenu.qml` and `clipboard-history.sh`) in Linux-Setup, and it looks the same.
 - **Desktop Switcher** (**`Ctrl+Alt+R`**): step to the next virtual desktop, round from the last to the first. Works from inside a RustDesk session too, and switches this PC's desktop, not the remote one's.
 - **Aquarium** (**`Ctrl+Alt+L`**): a Catppuccin pixel-art fish tank screensaver, with a shark, stretched across all your monitors as one tank. It starts after 5 minutes idle, and the PC locks when you come back. The Windows counterpart of the aquarium lock screen in Linux-Setup.
+- **Pip** (in the Herdr app): a pixel critter under Herdr's agents list that knocks when an agent needs you, dances when one is done, and naps while you're away. Linux-Setup's Herdr mod, put into Herdr by `install.bat` when Herdr is installed.
 
 All five tools run inside one background process with one tray icon, so every hotkey is always ready. The Aquarium is a screensaver, which Windows starts by itself, so it is its own small program; the tray app gives it `Ctrl+Alt+L`.
 
@@ -66,6 +67,7 @@ All five tools run inside one background process with one tray icon, so every ho
    - creates **`Pictures\Wallpapers`** if it doesn't exist, adding `Lowpoly_Street.png` as a starter image when it has no images (OneDrive-redirected Pictures folders are detected automatically)
    - turns on **Start with Windows** (first install only; after that the tray menu setting is kept)
    - makes the **Aquarium** your screensaver, after 5 minutes and locking the PC when it ends (first install only, and only if you don't already have a screensaver; after that your Screen Saver Settings are kept)
+   - if the **Herdr** app is installed, puts **Pip** in it, and moves an open Herdr from its stock layout to `main-pip`, the one with a spot for Pip (see [Pip](#pip-in-herdr))
    - starts the app in the tray
 3. Put your images in **`Pictures\Wallpapers`**.
 
@@ -73,7 +75,7 @@ Once installed, the repo folder can be moved or deleted. To update, pull the lat
 
 > Windows 11 hides new tray icons in the `^` overflow. Drag the icon onto the taskbar to keep it visible.
 
-To remove it, double-click **`uninstall.bat`**. This removes the app, the Start Menu shortcuts, the startup entry, the audio settings and, if the Aquarium is still your screensaver, the screensaver. Saved screenshots and your wallpapers are not touched.
+To remove it, double-click **`uninstall.bat`**. This removes the app, the Start Menu shortcuts, the startup entry, the audio settings, Pip from Herdr and, if the Aquarium is still your screensaver, the screensaver. Saved screenshots and your wallpapers are not touched.
 
 ---
 
@@ -198,10 +200,39 @@ To change how long Windows waits, or to stop it locking, open **Screen Saver Set
 
 ---
 
+## Pip (in Herdr)
+Pip lives in its own block between the Herdr app's Agents list and the sidebar footer. Herdr's own agent status drives it, so nothing has to tell it anything:
+
+| Herdr says | Pip |
+|---|---|
+| an agent is `blocked` | comes to the middle and knocks on the glass, under a "Claude needs you!" sign naming the space |
+| an agent is `done` | dances under confetti, under a "Claude's done!" sign, until you look at that agent |
+| any agent is `working` | gets to work: types at a laptop, reads a book, stacks blocks, hunts a bug, or thinks until a lightbulb goes on, changing every minute or so, faster with more agents at it |
+| nothing going on | wanders, and every half-minute or so kicks a ball about, chases a butterfly, smells a flower, digs something up, or yawns and stretches |
+| you're away | naps, and says hello when you're back |
+
+Click it to go to the agent it's pointing at; otherwise clicking pets it. It's drawn in the theme's colours, so it follows whatever theme Herdr uses.
+
+- **Setup.** `install.bat` copies Pip (`herdr-app\mods\pip`) and `herdr-app\layouts\main-pip.json` into Herdr's folder, `%USERPROFILE%\.config\herdr-app`, if the Herdr app is installed; otherwise it skips them, and running it again once Herdr is installed adds them. Only those three files are copied: the rest of that folder is Herdr's.
+- **The layout.** Pip needs a block of its own, and Herdr replaces its own layouts on every start, so Pip lives in `main-pip`, a copy of Herdr's `main` with that block added. Herdr remembers which layout it shows:
+  - Herdr open on its stock `main`: the install switches it to `main-pip`. Any other layout you've picked is left alone; `Ctrl+Shift+L` switches layouts.
+  - Herdr never run: it starts on `main-pip`.
+  - Herdr closed: it stays on what it was showing. Open it and press `Ctrl+Shift+L` until Pip shows up, or run `install.bat` again with Herdr open.
+- **Away** is the PC locked, the screensaver running (`Ctrl+Alt+L` included), or no input for 5 minutes. WarrenTool tells Pip by keeping `%LOCALAPPDATA%\WarrenTool\pip.away` while you're away, so Pip only naps while WarrenTool is running. Herdr keeps `blocked` and `done` until you act, so whatever an agent did while you were gone is still on show when you're back.
+- **An agent that exits leaves no `done`.** Herdr clears a terminal's status once its shell is back in front, so a run that ends with the program quitting goes from `working` straight to nothing, and Pip doesn't dance.
+- **Previews:** `herdr-app do pip.demo-knock` (also `demo-party`, `demo-work`, `demo-busy`, `demo-sleep`, `demo-idle`) shows a mood without waiting for an agent; `demo-off` ends it.
+- `uninstall.bat` moves an open Herdr from `main-pip` back to `main`, then removes Pip and `main-pip`. A closed Herdr left on `main-pip` goes back to `main` by itself when it next starts.
+
+Pip comes from Linux-Setup (`Hyprland_Setup/herdr-app`), with two changes, both of which work on Linux too: on Windows it learns you're away from WarrenTool rather than hypridle and `lock.sh`, and it sizes itself correctly when Herdr is zoomed (at 120% it used to stand below its block, cut off). `main-pip` is a copy of Herdr's `main` layout, and copies don't get Herdr's updates. To pick up a newer `main`, clone it again (`herdr-app do layout.clone --name main --as main-pip-new`), add Pip's block (`{"id": "pip", "type": "block", "size": {"px": 112}, "content": {"mod": "pip"}}`) before `sidebar-footer`, and put the result in `herdr-app\layouts\main-pip.json`. The 112 is mirrored as `BLOCK_H` in `main.js`.
+
+---
+
 ## Files Included
 - `install.bat` / `uninstall.bat` - Double-click to install or remove.
-- `Install.ps1` - The installer: builds the exe (including its icons), copies files, creates the shortcuts and wallpapers folder. Run with `-Uninstall` to remove.
-- `src\WarrenTool.cs` - The tray app: startup, the tray icon and menu, and the hotkeys.
+- `Install.ps1` - The installer: builds the exe (including its icons), copies files, creates the shortcuts and wallpapers folder, and puts Pip in Herdr. Run with `-Uninstall` to remove. `-HerdrHome` is Herdr's folder (the batch files pass `%USERPROFILE%\.config\herdr-app`).
+- `src\WarrenTool.cs` - The tray app: startup, the tray icon and menu, the hotkeys, and the away marker Pip naps by.
+- `herdr-app\mods\pip\main.js`, `mod.json` - Pip, a Herdr mod. Copied into Herdr's `mods\pip` by the installer.
+- `herdr-app\layouts\main-pip.json` - Herdr's `main` layout with a block for Pip. Copied into Herdr's `layouts` by the installer.
 - `src\ScreenShot.cs` - Screen Shot: the selection overlay, the editor, text and QR code reading.
 - `src\WallpaperPicker.cs` - Wallpaper Picker: the picker window and setting the wallpaper.
 - `src\AudioSwitcher.cs` - Audio Switcher: Windows audio devices, the audio menu, the switch popup and the tray icon's artwork.

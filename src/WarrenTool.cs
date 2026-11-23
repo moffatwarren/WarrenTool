@@ -11,7 +11,7 @@
 //   Ctrl+Alt+R         switch to the next virtual desktop, even from a RustDesk session (DesktopSwitcher.cs)
 //   Ctrl+Alt+L         show the aquarium now, locking the PC when it ends (Aquarium.cs, its own Aquarium.scr)
 // The tray icon shows the current audio output's icon. Left-click it for the audio menu,
-// right-click it for WarrenTool's menu.
+// right-click it for WarrenTool's menu. It also tells Pip, in the Herdr app, when you're away (AwayMarker).
 //
 // Command line:
 //   WarrenTool.exe [--screenshot | --wallpaper] [--tray] [wallpapers folder]
@@ -211,6 +211,7 @@ namespace WarrenTool
         readonly Recorder clipRecorder;
         readonly ClipboardWindow clipboard;
         readonly Desktops desktops;
+        readonly AwayMarker away;
         DateTime lastErrorShown = DateTime.MinValue;
 
         public TrayApp(string folder, EventWaitHandle screenshotEvent, EventWaitHandle wallpaperEvent)
@@ -230,6 +231,7 @@ namespace WarrenTool
             dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(clipboard.Preload));
             // Ctrl+Alt+R comes through its own keyboard hook (see DesktopSwitcher.cs) as well as the hotkey below
             desktops = new Desktops(message => Warn("Desktop Switcher", message));
+            away = new AwayMarker();
 
             // A message-only window receives the global hotkeys; editors and the picker come and go, this stays
             sink = new HwndSource(new HwndSourceParameters("WarrenTool.Hotkeys")
@@ -502,9 +504,93 @@ namespace WarrenTool
             UnregisterHotKey(sink.Handle, AquariumHotkey);
             audio.Dispose();
             clipRecorder.Dispose();
+            away.Dispose();
             icon.Visible = false;
             icon.Dispose();
             Application.Current.Shutdown();
+        }
+    }
+
+    // ---------- Away, for Pip in the Herdr app ----------
+
+    // Pip (herdr-app\mods\pip, set up in Herdr by Install.ps1) naps while you're away and says hello when you're
+    // back. On Linux it learns that from hypridle and lock.sh; here this keeps %LOCALAPPDATA%\WarrenTool\pip.away
+    // while the PC is locked, the screensaver is running (Ctrl+Alt+L included) or nothing has been touched for
+    // 5 minutes, and Pip looks for it every 2 seconds. It holds when the marker began, for anyone curious.
+    sealed class AwayMarker : IDisposable
+    {
+        const uint IdleMs = 5 * 60 * 1000;
+        const int SPI_GETSCREENSAVERRUNNING = 0x72;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+
+        [DllImport("user32.dll")]
+        static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+
+        [DllImport("user32.dll")]
+        static extern bool SystemParametersInfo(int action, int param, out bool value, int winIni);
+
+        static readonly string FilePath = IOPath.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarrenTool", "pip.away");
+
+        readonly Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
+        readonly DispatcherTimer timer;
+        bool locked;
+        uint? unlockedAt;   // Environment.TickCount at the last sign-in, which counts as input
+        bool away;
+
+        public AwayMarker()
+        {
+            // Left behind by a run that ended while you were away (the installer stops WarrenTool, say)
+            try { File.Delete(FilePath); } catch { }
+            SystemEvents.SessionSwitch += OnSessionSwitch;
+            timer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, delegate { Update(); }, dispatcher);
+        }
+
+        // Raised on SystemEvents' own thread
+        void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+        {
+            if (e.Reason != SessionSwitchReason.SessionLock && e.Reason != SessionSwitchReason.SessionUnlock) return;
+            bool isLocked = e.Reason == SessionSwitchReason.SessionLock;
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                locked = isLocked;
+                if (!isLocked) unlockedAt = (uint)Environment.TickCount;
+                Update();
+            }));
+        }
+
+        void Update()
+        {
+            uint now = (uint)Environment.TickCount;
+            var input = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO)) };
+            // Unsigned subtraction stays right across the tick count's 49-day wrap
+            uint idle = GetLastInputInfo(ref input) ? now - input.dwTime : 0;
+            if (unlockedAt.HasValue) idle = Math.Min(idle, now - unlockedAt.Value);
+            bool saver;
+            if (!SystemParametersInfo(SPI_GETSCREENSAVERRUNNING, 0, out saver, 0)) saver = false;
+            Set(locked || saver || idle >= IdleMs);
+        }
+
+        void Set(bool value)
+        {
+            if (value == away) return;
+            away = value;
+            // A failure is logged once, not every tick; the next change tries again
+            try
+            {
+                if (value) File.WriteAllText(FilePath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+                else File.Delete(FilePath);
+            }
+            catch (Exception ex) { ErrorLog.Write(ex); }
+        }
+
+        public void Dispose()
+        {
+            timer.Stop();
+            SystemEvents.SessionSwitch -= OnSessionSwitch;
+            try { File.Delete(FilePath); } catch { }
         }
     }
 
