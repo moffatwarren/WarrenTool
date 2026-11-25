@@ -10,7 +10,7 @@
 //   Selecting:  drag                     select the region
 //               Esc / right-click        cancel
 //
-//   Editor:     B A R O T D              brush, arrow, rectangle, ellipse, text, pixelate
+//   Editor:     B H A R O T D            brush, highlighter, arrow, rectangle, ellipse, text, pixelate
 //               X                        copy text: drag a box around text in the shot to copy it as text,
 //                                        or around a QR code to copy what it says (its URL)
 //               + / -                    stroke size
@@ -474,7 +474,7 @@ namespace ScreenShot
 
     // ---------- The editor ----------
 
-    enum Tool { Brush, Arrow, Rectangle, Ellipse, Text, Pixelate, CopyText }
+    enum Tool { Brush, Highlighter, Arrow, Rectangle, Ellipse, Text, Pixelate, CopyText }
 
     // One undoable step: either one element added to the drawing, or everything cleared from it
     class Edit
@@ -606,6 +606,12 @@ namespace ScreenShot
         Tool drawingWith;       // ... and the tool it was started with
         TextBox textBox;        // the text being typed
 
+        // The highlighter stroke being dragged out: the points it is drawn through, whether the last one
+        // is kept or only follows the mouse, and the whole drawing as it looks highlighted
+        List<Point> marks;
+        bool tipKept;
+        BitmapSource highlighted;
+
         // A short message over the bottom of the shot, for things with no button to flash
         readonly TextBlock toastText = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis };
         readonly Border toast = new Border();
@@ -709,6 +715,10 @@ namespace ScreenShot
 
         double StrokeWidth { get { return lineSize * scale; } }
 
+        // A highlighter has to cover a line of text, so it is far wider than the brush at the same size:
+        // 21 at the default stroke size, as in Linux-Setup's editor
+        double HighlightWidth { get { return (lineSize * 3 + 6) * scale; } }
+
         // 20 at the default stroke size, as in swappy's text_size
         double TextSize { get { return (10 + 2 * lineSize) * scale; } }
 
@@ -752,7 +762,9 @@ namespace ScreenShot
             double fit = Math.Min(1, Math.Min(maxW / naturalW, maxH / naturalH));
             view.Width = naturalW * fit;
             view.Height = naturalH * fit;
-            RenderOptions.SetBitmapScalingMode(image, fit < 1 ? BitmapScalingMode.HighQuality : BitmapScalingMode.NearestNeighbor);
+            // The surface's, not just the image's: a highlighter stroke is painted with pixels of the shot,
+            // and has to be scaled the same way or the text under it blurs
+            RenderOptions.SetBitmapScalingMode(surface, fit < 1 ? BitmapScalingMode.HighQuality : BitmapScalingMode.NearestNeighbor);
         }
 
         // In real pixels: WPF's own Left/Top are unreliable across monitors with different scaling
@@ -821,6 +833,7 @@ namespace ScreenShot
         {
             var left = new StackPanel { Orientation = Orientation.Horizontal };
             AddTool(left, Tool.Brush, "M2.5,13.5 L3.5,10 L10.5,3 Q11.5,2 12.5,3 L13,3.5 Q14,4.5 13,5.5 L6,12.5 Z M9.5,4 L12,6.5", "Brush (B)");
+            AddTool(left, Tool.Highlighter, "M10,2.5 L13.5,6 L8,11.5 L4.5,8 Z M4.5,8 L2.5,12 L4,13.5 L8,11.5 M9.5,13.5 H13.5", "Highlighter (H)");
             AddTool(left, Tool.Arrow, "M3.5,12.5 L12.5,3.5 M6.5,3.5 H12.5 V9.5", "Arrow (A)");
             AddTool(left, Tool.Rectangle, "M2.5,4 H13.5 V12 H2.5 Z", "Rectangle (R)");
             AddTool(left, Tool.Ellipse, "M2.5,8 A5.5,4.5 0 1 0 13.5,8 A5.5,4.5 0 1 0 2.5,8 Z", "Ellipse (O)");
@@ -892,7 +905,7 @@ namespace ScreenShot
             CommitText();
             tool = next;
             foreach (var pair in toolChips) pair.Value.Active = pair.Key == tool;
-            surface.Cursor = tool == Tool.Brush ? Cursors.Pen : tool == Tool.Text ? Cursors.IBeam : Cursors.Cross;
+            surface.Cursor = tool == Tool.Brush || tool == Tool.Highlighter ? Cursors.Pen : tool == Tool.Text ? Cursors.IBeam : Cursors.Cross;
         }
 
         void SetColor(Color next)
@@ -944,6 +957,10 @@ namespace ScreenShot
                     line.Points.Add(p);
                     line.Points.Add(new Point(p.X + 0.01, p.Y));
                     drawing = line;
+                    break;
+
+                case Tool.Highlighter:
+                    drawing = BeginHighlight(p);
                     break;
 
                 case Tool.Arrow:
@@ -1002,7 +1019,11 @@ namespace ScreenShot
         {
             var line = drawing as Polyline;
             var arrow = drawing as ShapePath;
-            if (line != null)
+            if (drawingWith == Tool.Highlighter)
+            {
+                HighlightTo(p);
+            }
+            else if (line != null)
             {
                 line.Points.Add(p);
             }
@@ -1053,7 +1074,16 @@ namespace ScreenShot
             surface.ReleaseMouseCapture();
 
             var box = done as FrameworkElement;
-            if (scratch.Children.Contains(done))
+            if (drawingWith == Tool.Highlighter)
+            {
+                if (!FinishHighlight((ShapePath)done))
+                {
+                    // A click with the highlighter draws nothing
+                    ink.Children.Remove(done);
+                    return;
+                }
+            }
+            else if (scratch.Children.Contains(done))
             {
                 // A marquee: what matters is the region it outlined
                 scratch.Children.Remove(done);
@@ -1127,6 +1157,123 @@ namespace ScreenShot
             Canvas.SetLeft(patch, region.X);
             Canvas.SetTop(patch, region.Y);
             return patch;
+        }
+
+        // ---------- Highlighter ----------
+
+        // As Linux-Setup's editor highlights: the color multiplied into what is underneath, then screened
+        // over it at 35%. Multiply alone is a real highlighter on a light page (white takes the color, black
+        // text stays black) and does nothing at all on a dark one, where the tint is what shows. Plain
+        // transparency, the obvious version, turns a pastel on white into a faint cream and greys the text.
+        //
+        // WPF has no blend modes, so the drawing so far (the shot and its markup) is highlighted all over up
+        // front, and the stroke is painted with that: wherever it covers, it shows those pixels. What shows
+        // while dragging is what gets kept. A stroke crossing itself doesn't darken, and one laid over an
+        // earlier stroke does, as with a real highlighter.
+        ShapePath BeginHighlight(Point p)
+        {
+            highlighted = Highlighted(Flatten(), color);
+            marks = new List<Point> { p };
+            tipKept = true;
+            return new ShapePath
+            {
+                Stroke = Paint(highlighted, 0, 0),
+                StrokeThickness = HighlightWidth,
+                StrokeLineJoin = PenLineJoin.Round,     // and flat ends, as a chisel tip leaves
+            };
+        }
+
+        // The last point follows the mouse, and is kept only once it is half a stroke's width from the one
+        // before it, which irons out the hand's wobble: that suits a marker
+        void HighlightTo(Point p)
+        {
+            if (tipKept) marks.Add(p);
+            else marks[marks.Count - 1] = p;
+            var stroke = (ShapePath)drawing;
+            tipKept = (p - marks[marks.Count - 2]).Length >= stroke.StrokeThickness / 2;
+            stroke.Data = Smooth(marks);
+        }
+
+        // Through the midpoints, with each point as the control point: a smooth curve rather than a polyline
+        static Geometry Smooth(List<Point> p)
+        {
+            var curve = new StreamGeometry();
+            using (var ctx = curve.Open())
+            {
+                ctx.BeginFigure(p[0], false, false);
+                for (int i = 1; i < p.Count - 1; i++)
+                    ctx.QuadraticBezierTo(p[i], new Point((p[i].X + p[i + 1].X) / 2, (p[i].Y + p[i + 1].Y) / 2), true, true);
+                ctx.LineTo(p[p.Count - 1], true, true);
+            }
+            curve.Freeze();
+            return curve;
+        }
+
+        // False when the stroke was only a click. Otherwise it keeps just the highlighted pixels it covers:
+        // a whole drawing's worth for every stroke would add up.
+        bool FinishHighlight(ShapePath stroke)
+        {
+            BitmapSource all = highlighted;
+            highlighted = null;
+            // A third point means it moved half a width already, so only a two-point stroke can be a click,
+            // and a loop ending where it began is not one
+            if (marks.Count < 2 || (marks.Count == 2 && (marks[1] - marks[0]).Length < 2)) return false;
+
+            Rect covered = stroke.Data.Bounds;
+            covered.Inflate(stroke.StrokeThickness / 2 + 1, stroke.StrokeThickness / 2 + 1);
+            covered.Intersect(new Rect(0, 0, pixelWidth, pixelHeight));
+            int x = (int)Math.Floor(covered.Left), y = (int)Math.Floor(covered.Top);
+            int width = (int)Math.Ceiling(covered.Right) - x, height = (int)Math.Ceiling(covered.Bottom) - y;
+            var pixels = new byte[width * 4 * height];
+            all.CopyPixels(new Int32Rect(x, y, width, height), pixels, width * 4, 0);
+            var part = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgr32, null, pixels, width * 4);
+            part.Freeze();
+            stroke.Stroke = Paint(part, x, y);
+            return true;
+        }
+
+        // Paints with `image` laid over the shot, its top left corner at (x, y)
+        static ImageBrush Paint(BitmapSource image, int x, int y)
+        {
+            var brush = new ImageBrush(image)
+            {
+                ViewportUnits = BrushMappingMode.Absolute,
+                Viewport = new Rect(x, y, image.PixelWidth, image.PixelHeight),
+                Stretch = Stretch.Fill,
+            };
+            brush.Freeze();
+            return brush;
+        }
+
+        // All of `under` as a highlighter in `tint` would leave it
+        static BitmapSource Highlighted(BitmapSource under, Color tint)
+        {
+            int width = under.PixelWidth, height = under.PixelHeight, stride = width * 4;
+            var pixels = new byte[stride * height];
+            under.CopyPixels(pixels, stride, 0);    // BGRA, opaque
+            byte[] b = HighlightCurve(tint.B), g = HighlightCurve(tint.G), r = HighlightCurve(tint.R);
+            for (int i = 0; i < pixels.Length; i += 4)
+            {
+                pixels[i] = b[pixels[i]];
+                pixels[i + 1] = g[pixels[i + 1]];
+                pixels[i + 2] = r[pixels[i + 2]];
+            }
+            var result = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgr32, null, pixels, stride);
+            result.Freeze();
+            return result;
+        }
+
+        // What one channel of the tint makes of each value under it: multiplied, then screened at 35%
+        static byte[] HighlightCurve(byte tint)
+        {
+            double c = tint / 255.0;
+            var curve = new byte[256];
+            for (int under = 0; under < 256; under++)
+            {
+                double multiplied = under / 255.0 * c;
+                curve[under] = (byte)Math.Round((multiplied + 0.35 * c * (1 - multiplied)) * 255);
+            }
+            return curve;
         }
 
         // ---------- Copying text out of the shot ----------
@@ -1312,6 +1459,7 @@ namespace ScreenShot
             switch (e.Key)
             {
                 case Key.B: SetTool(Tool.Brush); break;
+                case Key.H: SetTool(Tool.Highlighter); break;
                 case Key.A: SetTool(Tool.Arrow); break;
                 case Key.R: SetTool(Tool.Rectangle); break;
                 case Key.O: SetTool(Tool.Ellipse); break;

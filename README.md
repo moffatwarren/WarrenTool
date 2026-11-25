@@ -20,7 +20,8 @@ All five tools run inside one background process with one tray icon, so every ho
 
 **Screen Shot**
 - Freezes the screen while you drag a rectangle, so open menus and tooltips can be captured.
-- Opens the region in an editor in the middle of the screen: brush, arrow, rectangle, ellipse, text and pixelate.
+- Opens the region in an editor in the middle of the screen: brush, highlighter, arrow, rectangle, ellipse, text and pixelate.
+- The highlighter is Linux-Setup's: it tints a light page like a real highlighter, keeping black text black, and still shows on a dark one.
 - **Copy to clipboard** copies the shot with its markup, at exactly the size you selected.
 - **Copy text** reads the text inside a box you drag on the shot and copies it as text (Windows' built-in OCR). Drag the box around a **QR code** instead and it copies the code's URL.
 - **`Ctrl+Shift+Alt+S`** does the same in one step: drag a rectangle on the screen and what it says is copied, with no editor. A note at the bottom of the screen shows what was copied, and the window you were in (a RustDesk session, say) keeps the focus, so you can paste straight away.
@@ -87,6 +88,7 @@ The region opens in the editor:
 | Key / Mouse | Action |
 |---|---|
 | `B` | Brush (the default) |
+| `H` | Highlighter: a wide marker stroke, for going over a line of text |
 | `A` | Arrow |
 | `R` | Rectangle |
 | `O` | Ellipse |
