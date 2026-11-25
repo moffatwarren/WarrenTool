@@ -22,7 +22,8 @@ All five tools run inside one background process with one tray icon, so every ho
 - Freezes the screen while you drag a rectangle, so open menus and tooltips can be captured.
 - Opens the region in an editor in the middle of the screen: brush, highlighter, arrow, rectangle, ellipse, text and pixelate.
 - The highlighter is Linux-Setup's: it tints a light page like a real highlighter, keeping black text black, and still shows on a dark one.
-- **Copy to clipboard** copies the shot with its markup, at exactly the size you selected.
+- **Zoom** in with the mouse wheel (it zooms on the mouse) or the zoom buttons, and move around the shot by right-dragging it or with the scroll bars. Zoomed in, the shot's pixels show as crisp, even squares.
+- **Copy to clipboard** copies the shot with its markup, at exactly the size you selected. Zoomed in, it copies what the window shows: only the part in view, as large as it is shown.
 - **Copy text** reads the text inside a box you drag on the shot and copies it as text (Windows' built-in OCR). Drag the box around a **QR code** instead and it copies the code's URL.
 - **`Ctrl+Shift+Alt+S`** does the same in one step: drag a rectangle on the screen and what it says is copied, with no editor. A note at the bottom of the screen shows what was copied, and the window you were in (a RustDesk session, say) keeps the focus, so you can paste straight away.
 
@@ -97,9 +98,12 @@ The region opens in the editor:
 | `D` | Pixelate: drag over what you want hidden |
 | `X` | Copy text: drag a box around text in the shot to copy it to the clipboard as text, or around a QR code to copy its URL |
 | `+` `-` | Stroke size (text size follows it) |
+| Mouse wheel, `Ctrl+=` / `Ctrl+-`, or the zoom buttons | Zoom in / out, from the whole shot up to 1600%. The wheel zooms on the mouse |
+| `Ctrl+0` or click the zoom % | Back to the whole shot |
+| Right-drag, or the scroll bars | Move around the shot when zoomed in |
 | `Ctrl+Z` / `Ctrl+Y` or `Ctrl+Shift+Z` | Undo / redo |
-| `Ctrl+C` or **Copy to clipboard** | Copy the shot with its markup. The editor stays open |
-| `Ctrl+S` or **Save** | Save a PNG to `Pictures\Screenshots` |
+| `Ctrl+C` or **Copy to clipboard** | Copy the shot with its markup. Zoomed in, only the part in the window, at the zoom it is shown at (full size below 100%). The editor stays open |
+| `Ctrl+S` or **Save** | Save a PNG of the whole shot to `Pictures\Screenshots`, whatever the zoom |
 | `Esc` | Close the editor |
 
 Each capture opens its own editor, so you can keep one open while taking another.

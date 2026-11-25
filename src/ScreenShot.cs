@@ -14,8 +14,11 @@
 //               X                        copy text: drag a box around text in the shot to copy it as text,
 //                                        or around a QR code to copy what it says (its URL)
 //               + / -                    stroke size
+//               mouse wheel              zoom in / out on the mouse (also Ctrl+= and Ctrl+-); Ctrl+0 fits the whole shot
+//               right-drag               move around the shot when zoomed in (or the scroll bars)
 //               Ctrl+Z, Ctrl+Y           undo, redo (also Ctrl+Shift+Z)
-//               Ctrl+C                   copy the marked-up shot to the clipboard
+//               Ctrl+C                   copy the marked-up shot to the clipboard; zoomed in, only the part in
+//                                        the window, as large as it is shown
 //               Ctrl+S                   save it to Pictures\Screenshots
 //               Esc                      close
 
@@ -571,6 +574,51 @@ namespace ScreenShot
             " HorizontalScrollBarVisibility='Hidden' VerticalScrollBarVisibility='Hidden'/>" +
             "</Border></ControlTemplate>");
 
+        // Scroll bars that float over the edges of the shot rather than take room beside it, so the shot fills
+        // the same space at every zoom. They show only when it is zoomed in.
+        static readonly ControlTemplate FloatingScrollBars = (ControlTemplate)XamlReader.Parse(
+            "<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'" +
+            " xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='ScrollViewer'><Grid>" +
+            "<ScrollContentPresenter x:Name='PART_ScrollContentPresenter'/>" +
+            FloatingBar(true, "Width='10' HorizontalAlignment='Right' Margin='0,0,0,10'") +
+            FloatingBar(false, "Height='10' VerticalAlignment='Bottom' Margin='0,0,10,0'") +
+            "</Grid></ControlTemplate>");
+
+        // A thin rounded thumb, and clicks either side of it page, as on any scroll bar. The PART_ names are
+        // what make the ScrollViewer drive it.
+        static string FloatingBar(bool vertical, string placement)
+        {
+            string orientation = vertical ? "Vertical" : "Horizontal", length = vertical ? "Height" : "Width";
+            return "<ScrollBar x:Name='PART_" + orientation + "ScrollBar' Orientation='" + orientation + "' " + placement +
+                " Cursor='Arrow' Maximum='{TemplateBinding Scrollable" + length + "}' ViewportSize='{TemplateBinding Viewport" + length + "}'" +
+                " Value='{Binding " + orientation + "Offset, Mode=OneWay, RelativeSource={RelativeSource TemplatedParent}}'" +
+                " Visibility='{TemplateBinding Computed" + orientation + "ScrollBarVisibility}'>" +
+                "<ScrollBar.Template><ControlTemplate TargetType='ScrollBar'>" +
+                "<Track x:Name='PART_Track' IsDirectionReversed='" + vertical + "'>" +
+                "<Track.DecreaseRepeatButton>" + PageButton(vertical ? "PageUp" : "PageLeft") + "</Track.DecreaseRepeatButton>" +
+                "<Track.IncreaseRepeatButton>" + PageButton(vertical ? "PageDown" : "PageRight") + "</Track.IncreaseRepeatButton>" +
+                "<Track.Thumb><Thumb><Thumb.Template><ControlTemplate TargetType='Thumb'>" +
+                "<Border x:Name='Bar' Margin='2' CornerRadius='3' Background='#A5ADCB' BorderBrush='#181926' BorderThickness='1' Opacity='0.6'/>" +
+                "<ControlTemplate.Triggers>" +
+                "<Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Bar' Property='Opacity' Value='0.85'/></Trigger>" +
+                "<Trigger Property='IsDragging' Value='True'><Setter TargetName='Bar' Property='Opacity' Value='1'/></Trigger>" +
+                "</ControlTemplate.Triggers></ControlTemplate></Thumb.Template></Thumb></Track.Thumb>" +
+                "</Track></ControlTemplate></ScrollBar.Template></ScrollBar>";
+        }
+
+        static string PageButton(string command)
+        {
+            return "<RepeatButton Command='{x:Static ScrollBar." + command + "Command}' Focusable='False'>" +
+                "<RepeatButton.Template><ControlTemplate TargetType='RepeatButton'><Border Background='Transparent'/>" +
+                "</ControlTemplate></RepeatButton.Template></RepeatButton>";
+        }
+
+        // Zoom is in screen pixels per pixel of the shot, so 1 is pixel for pixel. It goes from fitZoom, where
+        // the whole shot shows, up to MaxZoom, by these steps: whole numbers above 1, so every pixel of the shot
+        // shows as an even square (at 1.5 some would be one screen pixel wide and some two).
+        static readonly double[] ZoomSteps = { 0.25, 1 / 3.0, 0.5, 2 / 3.0, 1, 2, 3, 4, 6, 8, 12, 16 };
+        const double MaxZoom = 16;
+
         public static string SaveFolder
         {
             get { return IOPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Screenshots"); }
@@ -580,19 +628,34 @@ namespace ScreenShot
         readonly int pixelWidth, pixelHeight;
         WinForms.Screen screen;
 
-        // The shot and everything drawn on it, in image pixels. Scaled to fit the screen by `view`.
+        // The shot and everything drawn on it, in image pixels. Scaled to the zoom by `view`, inside `scroller`,
+        // which is the size the whole shot fits in and pans over it when it is zoomed in.
         readonly Grid surface;
         readonly Image image = new Image { Stretch = Stretch.Fill };
         readonly Canvas ink = new Canvas();         // finished markup; this is what gets flattened
         readonly Canvas scratch = new Canvas();     // the text box being typed in, the pixelate marquee
         readonly Viewbox view = new Viewbox { Stretch = Stretch.Fill };
+        readonly ScrollViewer scroller = new ScrollViewer
+        {
+            Template = FloatingScrollBars,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Focusable = false,      // the keyboard stays with the window
+        };
 
         readonly Dictionary<Tool, Chip> toolChips = new Dictionary<Tool, Chip>();
         readonly List<KeyValuePair<Color, Ellipse>> swatchRings = new List<KeyValuePair<Color, Ellipse>>();
         readonly TextBlock sizeText = new TextBlock();
+        readonly TextBlock zoomText = new TextBlock();
         readonly TextBlock copyText = new TextBlock { Text = CopyLabel };
         readonly TextBlock saveText = new TextBlock { Text = SaveLabel };
-        Chip undoChip, redoChip, clearChip;
+        Chip undoChip, redoChip, clearChip, zoomOutChip, zoomInChip;
+
+        double zoom = 1, fitZoom = 1;
+        int wheel;              // wheel movement short of a whole notch: a touchpad sends it in slivers
+        bool panning;           // right-dragging the shot around
+        Point panFrom;
+        Vector panStart;        // the scroll offsets when the drag began
 
         readonly Stack<Edit> undo = new Stack<Edit>();
         readonly Stack<Edit> redo = new Stack<Edit>();
@@ -659,6 +722,11 @@ namespace ScreenShot
             surface.MouseLeftButtonUp += delegate { FinishDrawing(); };
             surface.LostMouseCapture += delegate { FinishDrawing(); };
             view.Child = surface;
+            scroller.Content = view;
+            scroller.MouseRightButtonDown += OnPanDown;
+            scroller.MouseMove += OnPanMove;
+            scroller.MouseRightButtonUp += delegate(object s, MouseButtonEventArgs e) { if (panning) { EndPan(); e.Handled = true; } };
+            scroller.LostMouseCapture += delegate { EndPan(); };
 
             var frame = new Border
             {
@@ -666,7 +734,7 @@ namespace ScreenShot
                 BorderThickness = new Thickness(1),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                Child = view,
+                Child = scroller,
             };
             toastText.Foreground = TextBrush;
             toast.Child = toastText;
@@ -688,6 +756,8 @@ namespace ScreenShot
             layers.Children.Add(toast);
             var stage = new Border { Padding = new Thickness(16), Background = Brushes.Transparent, Child = layers };
             stage.MouseLeftButtonDown += delegate { CommitText(); };
+            // Over the margin around the shot too, so it needn't be aimed at
+            stage.PreviewMouseWheel += OnWheel;
 
             var toolbar = BuildToolbar();
             DockPanel.SetDock(toolbar, Dock.Top);
@@ -722,6 +792,10 @@ namespace ScreenShot
         // 20 at the default stroke size, as in swappy's text_size
         double TextSize { get { return (10 + 2 * lineSize) * scale; } }
 
+        // The outline of a marquee or the text box being typed in: as thin as it is at 100%, however far in
+        // the shot is zoomed
+        double GuideWidth { get { return Math.Max(1, scale) / Math.Max(1, zoom); } }
+
         // ---------- Window placement and theme ----------
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -751,20 +825,125 @@ namespace ScreenShot
             ApplyScale(newDpi.DpiScaleX);
         }
 
-        // Shows the shot pixel for pixel, shrinking it only when it wouldn't fit on the monitor
+        // Sizes the window to show the shot pixel for pixel, shrinking it only when it wouldn't fit on the
+        // monitor. The window keeps that size: zooming in enlarges the shot inside it.
         void ApplyScale(double monitorScale)
         {
+            bool fitted = zoom <= fitZoom;
             scale = monitorScale;
             var area = screen.WorkingArea;
             double naturalW = pixelWidth / scale, naturalH = pixelHeight / scale;
             double maxW = area.Width / scale * 0.92 - 60;       // room for the stage padding and window frame
             double maxH = area.Height / scale * 0.92 - 150;     // ... plus the title bar and toolbar
-            double fit = Math.Min(1, Math.Min(maxW / naturalW, maxH / naturalH));
-            view.Width = naturalW * fit;
-            view.Height = naturalH * fit;
-            // The surface's, not just the image's: a highlighter stroke is painted with pixels of the shot,
-            // and has to be scaled the same way or the text under it blurs
-            RenderOptions.SetBitmapScalingMode(surface, fit < 1 ? BitmapScalingMode.HighQuality : BitmapScalingMode.NearestNeighbor);
+            fitZoom = Math.Min(1, Math.Min(maxW / naturalW, maxH / naturalH));
+            scroller.Width = naturalW * fitZoom;
+            scroller.Height = naturalH * fitZoom;
+            SetZoom(fitted ? fitZoom : zoom, ViewCenter);
+        }
+
+        // ---------- Zoom ----------
+
+        Point ViewCenter { get { return new Point(scroller.Width / 2, scroller.Height / 2); } }
+
+        // Zooms to `next`, keeping the part of the shot at `at` (a point in the window's view of it) where it is
+        void SetZoom(double next, Point at)
+        {
+            next = Math.Max(fitZoom, Math.Min(MaxZoom, next));
+            bool shown = IsLoaded && !double.IsNaN(view.Width);
+            // Brings the scroll offsets up to date, in case the last zoom's are still waiting on a layout pass
+            if (shown) scroller.UpdateLayout();
+            double before = shown ? view.Width / pixelWidth : 0;   // DIPs per pixel of the shot, so far
+            double x = scroller.HorizontalOffset + at.X, y = scroller.VerticalOffset + at.Y;
+
+            zoom = next;
+            // Worked out as the scroller's size is, so that fitted they are exactly equal and no scroll bars show
+            view.Width = pixelWidth / scale * zoom;
+            view.Height = pixelHeight / scale * zoom;
+            if (shown)
+            {
+                scroller.UpdateLayout();    // so it scrolls within the new size
+                double after = view.Width / pixelWidth;
+                scroller.ScrollToHorizontalOffset(x / before * after - at.X);
+                scroller.ScrollToVerticalOffset(y / before * after - at.Y);
+            }
+
+            // Crisp pixels from 100% up, smooth shrinking below it. The surface's, not just the image's: a
+            // highlighter stroke is painted with pixels of the shot, and has to be scaled the same way or the
+            // text under it blurs. The markup's too, for the copy, which draws it on its own.
+            BitmapScalingMode scaling = zoom < 1 ? BitmapScalingMode.HighQuality : BitmapScalingMode.NearestNeighbor;
+            RenderOptions.SetBitmapScalingMode(surface, scaling);
+            RenderOptions.SetBitmapScalingMode(ink, scaling);
+            zoomText.Text = Math.Round(zoom * 100) + "%";
+            zoomOutChip.IsEnabled = zoom > fitZoom;
+            zoomInChip.IsEnabled = zoom < MaxZoom;
+        }
+
+        // The next step in or out from `from`. A step that would land just short of fitting fits instead.
+        double StepZoom(double from, int direction)
+        {
+            if (direction > 0)
+            {
+                foreach (double step in ZoomSteps) if (step > from * 1.05) return step;
+                return MaxZoom;
+            }
+            for (int i = ZoomSteps.Length - 1; i >= 0; i--)
+                if (ZoomSteps[i] < from / 1.05) return ZoomSteps[i] < fitZoom * 1.05 ? fitZoom : ZoomSteps[i];
+            return fitZoom;
+        }
+
+        void ZoomIn() { SetZoom(StepZoom(zoom, 1), ViewCenter); }
+
+        void ZoomOut() { SetZoom(StepZoom(zoom, -1), ViewCenter); }
+
+        void FitZoom()
+        {
+            SetZoom(fitZoom, ViewCenter);
+        }
+
+        // On the mouse: what is under it stays under it
+        void OnWheel(object sender, MouseWheelEventArgs e)
+        {
+            e.Handled = true;
+            if (panning) return;    // the drag holds on to the offsets it started from
+            if ((wheel > 0) != (e.Delta > 0)) wheel = 0;    // turned the other way
+            wheel += e.Delta;
+            int notches = wheel / 120;      // a mouse's notch; a touchpad's slivers add up to it
+            if (notches == 0) return;
+            wheel -= notches * 120;
+
+            double next = zoom;
+            for (int i = 0; i < Math.Abs(notches); i++) next = StepZoom(next, notches);
+            Point at = e.GetPosition(scroller);
+            SetZoom(next, new Point(Math.Max(0, Math.Min(scroller.Width, at.X)), Math.Max(0, Math.Min(scroller.Height, at.Y))));
+        }
+
+        // Right-drag: the shot follows the mouse
+        void OnPanDown(object sender, MouseButtonEventArgs e)
+        {
+            if (drawing != null || (scroller.ScrollableWidth <= 0 && scroller.ScrollableHeight <= 0)) return;
+            if (textBox != null && textBox.IsMouseOver) return;     // its own Cut / Copy / Paste menu
+            panning = true;
+            panFrom = e.GetPosition(scroller);
+            panStart = new Vector(scroller.HorizontalOffset, scroller.VerticalOffset);
+            scroller.Cursor = Cursors.SizeAll;
+            scroller.CaptureMouse();
+            e.Handled = true;
+        }
+
+        void OnPanMove(object sender, MouseEventArgs e)
+        {
+            if (!panning) return;
+            Vector moved = e.GetPosition(scroller) - panFrom;
+            scroller.ScrollToHorizontalOffset(panStart.X - moved.X);
+            scroller.ScrollToVerticalOffset(panStart.Y - moved.Y);
+        }
+
+        void EndPan()
+        {
+            if (!panning) return;
+            panning = false;
+            scroller.Cursor = null;
+            scroller.ReleaseMouseCapture();
         }
 
         // In real pixels: WPF's own Left/Top are unreliable across monitors with different scaling
@@ -877,6 +1056,16 @@ namespace ScreenShot
             redoChip = AddChip(left, Glyph("M10,3.5 L13,6.5 L10,9.5 M13,6.5 H6 A3,3 0 0 0 6,12.5 H9", TextBrush), "Redo (Ctrl+Y)", Redo);
             clearChip = AddChip(left, Glyph("M3,4.5 H13 M6.5,4.5 V3 H9.5 V4.5 M4.5,4.5 L5,13 H11 L11.5,4.5 M7,7 V10.5 M9,7 V10.5", TextBrush),
                 "Clear all markup", Clear);
+            left.Children.Add(Divider());
+
+            const string lens = "M2.5,7 A4.5,4.5 0 1 0 11.5,7 A4.5,4.5 0 1 0 2.5,7 Z M10.5,10.5 L13.5,13.5 M5,7 H9";
+            zoomOutChip = AddChip(left, Glyph(lens, TextBrush), "Zoom out (mouse wheel, Ctrl+-)", ZoomOut);
+            zoomText.MinWidth = 38;
+            zoomText.TextAlignment = TextAlignment.Center;
+            zoomText.VerticalAlignment = VerticalAlignment.Center;
+            AddChip(left, zoomText, "Fit the whole shot in the window (Ctrl+0)", FitZoom).Padding = new Thickness(3, 7, 3, 7);
+            zoomInChip = AddChip(left, Glyph(lens + " M7,5 V9", TextBrush),
+                "Zoom in (mouse wheel, Ctrl+=). Right-drag to move around the shot", ZoomIn);
 
             var right = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(28, 0, 0, 0) };
             var save = new Chip(Labelled("M8,2.5 V10 M5,7 L8,10 L11,7 M3,13 H13", saveText, TextBrush), "Save to Pictures\\Screenshots (Ctrl+S)")
@@ -885,7 +1074,7 @@ namespace ScreenShot
                 Margin = new Thickness(0, 0, 6, 0),
             };
             save.Click += Save;
-            var copy = new Chip(Labelled("M6,6 H13 V13 H6 Z M3.5,10 V3.5 H10", copyText, CrustBrush), "Copy to clipboard (Ctrl+C)", true)
+            var copy = new Chip(Labelled("M6,6 H13 V13 H6 Z M3.5,10 V3.5 H10", copyText, CrustBrush), "Copy to clipboard (Ctrl+C). Zoomed in, only the part in the window", true)
             {
                 Padding = new Thickness(12, 7, 12, 7),
             };
@@ -985,7 +1174,7 @@ namespace ScreenShot
                     drawing = new Rectangle
                     {
                         Stroke = TextBrush,
-                        StrokeThickness = Math.Max(1, scale),
+                        StrokeThickness = GuideWidth,
                         StrokeDashArray = new DoubleCollection { 4, 3 },
                         Fill = Theme.Solid(Theme.Crust, 0x66),
                     };
@@ -995,7 +1184,7 @@ namespace ScreenShot
                     drawing = new Rectangle
                     {
                         Stroke = Theme.Solid(Theme.Mauve),
-                        StrokeThickness = Math.Max(1, scale),
+                        StrokeThickness = GuideWidth,
                         StrokeDashArray = new DoubleCollection { 4, 3 },
                         Fill = Theme.Solid(Theme.Mauve, 0x33),
                     };
@@ -1309,7 +1498,7 @@ namespace ScreenShot
                 Template = BareTextBox,
                 Background = Brushes.Transparent,
                 BorderBrush = Theme.Solid(Theme.Text, 0x80),
-                BorderThickness = new Thickness(Math.Max(1, scale)),
+                BorderThickness = new Thickness(GuideWidth),
                 Padding = new Thickness(pad, 0, pad, 0),
                 Foreground = brush,
                 CaretBrush = brush,
@@ -1440,6 +1629,9 @@ namespace ScreenShot
                         if (typing) return;
                         Redo();
                         break;
+                    case Key.OemPlus: case Key.Add: ZoomIn(); break;
+                    case Key.OemMinus: case Key.Subtract: ZoomOut(); break;
+                    case Key.D0: case Key.NumPad0: FitZoom(); break;
                     default: return;
                 }
                 e.Handled = true;
@@ -1478,6 +1670,32 @@ namespace ScreenShot
         // The shot with the markup drawn on it, at the shot's exact pixel size
         BitmapSource Flatten()
         {
+            return Render(Matrix.Identity, pixelWidth, pixelHeight);
+        }
+
+        // What Copy copies: what the window shows. That is the whole shot at its own size, or, zoomed in, only
+        // the part in the window, as large as it is shown there (and never smaller than the shot's own pixels:
+        // the window can show a large shot shrunk).
+        BitmapSource Shown()
+        {
+            CommitText();
+            var placed = surface.TransformToAncestor(scroller) as Transform;
+            if (zoom <= fitZoom || placed == null) return Flatten();
+
+            // Where the window draws the shot, as layout rounded it, so the copy has the same pixels the
+            // screen does. In screen pixels, or in the shot's own when the window shows it shrunk.
+            Matrix shown = placed.Value;
+            double toPixels = scale * Math.Max(1, zoom) / zoom;
+            shown.Scale(toPixels, toPixels);
+            Rect visible = Rect.Transform(new Rect(0, 0, pixelWidth, pixelHeight), shown);
+            visible.Intersect(new Rect(0, 0, scroller.ViewportWidth * toPixels, scroller.ViewportHeight * toPixels));
+            shown.Translate(-visible.X, -visible.Y);
+            return Render(shown, Math.Max(1, (int)Math.Round(visible.Width)), Math.Max(1, (int)Math.Round(visible.Height)));
+        }
+
+        // The shot with the markup on it, placed by `place` (from the shot's pixels) in a width x height bitmap
+        BitmapSource Render(Matrix place, int width, int height)
+        {
             CommitText();
             var all = new Rect(0, 0, pixelWidth, pixelHeight);
             var markup = new VisualBrush(ink)
@@ -1486,13 +1704,19 @@ namespace ScreenShot
                 Viewbox = all,
                 Stretch = Stretch.None,
             };
-            var visual = new DrawingVisual();
-            using (var dc = visual.RenderOpen())
+            var scene = new DrawingGroup();
+            // Crisp pixels, as the editor shows them zoomed in
+            RenderOptions.SetBitmapScalingMode(scene, BitmapScalingMode.NearestNeighbor);
+            using (DrawingContext dc = scene.Open())
             {
+                dc.PushTransform(new MatrixTransform(place));
                 dc.DrawImage(shot, all);
                 dc.DrawRectangle(markup, null, all);
+                dc.Pop();
             }
-            var flat = new RenderTargetBitmap(pixelWidth, pixelHeight, 96, 96, PixelFormats.Pbgra32);
+            var visual = new DrawingVisual();
+            using (DrawingContext dc = visual.RenderOpen()) dc.DrawDrawing(scene);
+            var flat = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
             flat.Render(visual);
             flat.Freeze();
             return flat;
@@ -1513,7 +1737,7 @@ namespace ScreenShot
             bool copied;
             try
             {
-                BitmapSource flat = Flatten();
+                BitmapSource flat = Shown();
                 using (var png = Png(flat))
                     copied = SystemClipboard.SetImage(flat, png.ToArray());
             }
