@@ -7,7 +7,7 @@ Windows tools in one lightweight tray app, installed once:
 - **Audio Switcher** (**`Ctrl+Alt+O`**): step to the next audio output, from the outputs you choose. The Windows counterpart of the Quickshell audio menu and `audio-output-toggle.sh` in [Linux-Setup](https://github.com/moffatwarren/Linux-Setup).
 - **Clipboard Manager** (**`Ctrl+Alt+V`**): a searchable history of the text and images you've copied, in a window in the middle of the screen. The Windows counterpart of the Quickshell clipboard menu (`ClipboardMenu.qml` and `clipboard-history.sh`) in Linux-Setup, and it looks the same.
 - **Desktop Switcher** (**`Ctrl+Alt+R`**): step to the next virtual desktop, round from the last to the first. Works from inside a RustDesk session too, and switches this PC's desktop, not the remote one's.
-- **Aquarium** (**`Ctrl+Alt+L`**): a Catppuccin pixel-art fish tank screensaver, with a shark, stretched across all your monitors as one tank. It starts after 5 minutes idle, and the PC locks when you come back. The Windows counterpart of the aquarium lock screen in Linux-Setup.
+- **Aquarium** (**`Ctrl+Alt+L`**): a Catppuccin pixel-art fish tank screensaver, visited by a shark, a great white and a scuba diver, stretched across all your monitors as one tank. It starts after 5 minutes idle, and the PC locks when you come back. The Windows counterpart of the aquarium lock screen in Linux-Setup.
 - **Pip** (in the Herdr app): a pixel critter under Herdr's agents list that knocks when an agent needs you, dances when one is done, and naps while you're away. Linux-Setup's Herdr mod, put into Herdr by `install.bat` when Herdr is installed.
 
 All five tools run inside one background process with one tray icon, so every hotkey is always ready. The Aquarium is a screensaver, which Windows starts by itself, so it is its own small program; the tray app gives it `Ctrl+Alt+L`.
@@ -54,7 +54,8 @@ All five tools run inside one background process with one tray icon, so every ho
 **Aquarium**
 - The same tank as Linux-Setup's: clownfish, tangs, angelfish, goldfish, pufferfish, bettas, schools of tetras, jellyfish, a crab, swaying weed, corals and a chest venting bubbles, all from the same sprites.
 - One tank across every monitor, not one per monitor: fish swim off one screen and onto the next.
-- A shark patrols the whole width, swims out of the tank and comes back later at another depth. Fish that find themselves near it dart away, and schools scatter together.
+- Visitors drop by, one at a time, as on Linux. A shark cruises in through the glass, across every monitor and out the far side, drifting towards the fish and now and then lunging, which sends them scattering. One visit in four is a great white instead: twice the size, slower, and given a wider berth.
+- Between the sharks, a scuba diver sinks in through the surface, swims a few short legs breathing out strings of bubbles, and rises back out. The fish keep their distance.
 - Crisp pixels at any resolution: the tank is scaled up by a whole number (5× on 1440p, 4× on 1080p).
 
 ---
@@ -240,8 +241,8 @@ Pip's three files are the same as Linux-Setup's (`Hyprland_Setup/herdr-app`), an
 - `src\AudioSwitcher.cs` - Audio Switcher: Windows audio devices, the audio menu, the switch popup and the tray icon's artwork.
 - `src\ClipboardManager.cs` - Clipboard Manager: watching the clipboard, the saved history and the history window.
 - `src\DesktopSwitcher.cs` - Desktop Switcher: switching virtual desktops, and the keyboard hook that catches `Ctrl+Alt+R` ahead of RustDesk.
-- `src\Aquarium.cs` - Aquarium: the tank, the fish and the shark, and the screensaver's windows. Built into its own `Aquarium.scr`, not into the exe.
-- `assets\aquarium\sprites` - The Aquarium's pixel art, embedded in `Aquarium.scr`. Made by `assets\aquarium\make_sprites.py` (Python, only needed to change the art), a copy of Linux-Setup's with the shark added.
+- `src\Aquarium.cs` - Aquarium: the tank, the fish and the visitors (the sharks and the diver), and the screensaver's windows. Built into its own `Aquarium.scr`, not into the exe.
+- `assets\aquarium\sprites` - The Aquarium's pixel art, embedded in `Aquarium.scr`. Made by `assets\aquarium\make_sprites.py` (Python, only needed to change the art). The generator and the sprites are the same as Linux-Setup's (`Hyprland_Setup/aquarium`), and are kept that way.
 - `src\Set-LockScreen.ps1` - Sets the Lock Screen image (WinRT API). Installed next to the exe and called by the picker.
 - `src\app.manifest` - Makes the app DPI aware, so captures are pixel-exact on scaled and mixed-DPI monitors.
 - `assets\Lowpoly_Street.png` - Starter wallpaper, copied in when the wallpapers folder has no images.

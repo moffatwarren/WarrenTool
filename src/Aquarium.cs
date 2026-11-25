@@ -1,5 +1,6 @@
 // Aquarium - a pixel-art fish tank screensaver, one tank across every monitor.
-// A port of the aquarium lock screen in Linux-Setup (Hyprland_Setup/aquarium/Aquarium.qml), plus a shark.
+// A port of the aquarium lock screen in Linux-Setup (Hyprland_Setup/aquarium): Ocean.qml's simulation, with
+// its two visitors, the shark (sometimes a great white) and the diver, and Aquarium.qml's drawing.
 // Not part of WarrenTool.exe: Install.ps1 builds it into its own Aquarium.scr next to it, embeds the
 // sprites (assets\aquarium\sprites) and makes it the screensaver. WarrenTool's Ctrl+Alt+L asks Windows to
 // start it (WarrenTool.cs).
@@ -501,11 +502,20 @@ namespace Aquarium
 
     // ---------- The tank ----------
 
-    // Aquarium.qml's simulation step for step, with its numbers, and a shark. Everything is in tank
-    // pixels and seconds. The water is pure black, and nothing is drawn over it but the scenery itself.
+    // Ocean.qml's simulation step for step, with its numbers. Everything is in tank pixels and seconds.
+    // The water is pure black, and nothing is drawn over it but the scenery itself.
     class Tank
     {
         public const double Step = 1.0 / 15;   // the simulation's rate, as on Linux
+
+        // How long, in seconds, before the shark first shows up, and between its visits
+        static readonly double[] SharkFirst = { 20, 60 }, SharkGap = { 60, 150 };
+        // How often a visit is the great white rather than the usual shark. It is a shark's visit either
+        // way, so the two never meet, and the diver takes turns with both.
+        const double BigSharkChance = 0.25;
+        // The same for the diver. The two visitors take turns: neither comes in while the other is in the
+        // water, and each leaves the other a quiet spell after it goes.
+        static readonly double[] DiverFirst = { 45, 120 }, DiverGap = { 150, 300 };
 
         static readonly int[] TailBeat = { 0, 1, 0, 2 };   // rest, up, rest, down
         static readonly string[] WeedNames = { "weed_green", "weed_teal", "weed_lime" };
@@ -541,16 +551,56 @@ namespace Aquarium
             public double Base, X, Y, V, Tv, Ty, Timer, Phase, Bob, OffX, OffY;
             public int Dir;
             public bool Turning;
-            public double Fleeing;   // seconds left of darting away from a shark
+            // Seconds left of darting away from the shark, and which way: left or right, up or down
+            public double Panic;
+            public int FleeDir;
+            public bool FleeUp;
             public int Frame, DrawX, DrawY;
             public int W { get { return Sprite.Width; } }
             public int H { get { return Sprite.Height; } }
         }
 
-        // Swims like a fish, but never turns at the glass: it swims out of the tank and comes back later
-        class Shark : Fish
+        // The shark and the diver: in the water by turns, and away for a while in between
+        class Visitor
         {
-            public double Away;   // seconds left out of the tank; 0 while it is in it
+            public bool Active;
+            public double Wait;   // seconds before it can come in
+            public int Dir, Frame, DrawX, DrawY;
+        }
+
+        // The two sharks. Speeds are tank pixels a second. The fear zone (Scare) reaches `Ahead` in front of
+        // the shark, `Behind` it and `Beside` above and below, and a fish in it darts `Escape` up or down;
+        // PreyFor looks `Reach` ahead of the snout and `Spread` either side of its line. The great white is
+        // twice the size, so all of that is wider, and it is slower in the water, with a slower beat of its tail.
+        class SharkKind
+        {
+            public Sprite Sprite;
+            public double Cruise, Lunge, Ahead, Behind, Beside, Reach, Spread, Beat, Bob;
+            public double[] Escape;
+        }
+
+        class Shark : Visitor
+        {
+            public SharkKind Kind;   // this visit's
+            public double X, Y, Ty, V, Burst, Rest, Timer, Phase;
+            public int Turns;
+            public bool Turning;
+            public int W { get { return Kind.Sprite.Width; } }
+            public int H { get { return Kind.Sprite.Height; } }
+        }
+
+        enum DiverMode { Down, Swim, Hover, Up }
+
+        // Tracked by its centre, because its two poses are different shapes
+        class Diver : Visitor
+        {
+            public Sprite Swim, Rise;
+            public Sprite Pose;   // the one it is in: upright to sink and rise, flat to swim
+            public DiverMode Mode;
+            public double Cx, Cy, Tx, Ty, V, Timer, Breath, PuffGap, Phase;
+            public int Legs, Puffs;
+            public int W { get { return Pose.Width; } }
+            public int H { get { return Pose.Height; } }
         }
 
         class Jelly
@@ -591,7 +641,11 @@ namespace Aquarium
         // Far fish first: fish[0..farCount) swim behind the back weeds, the rest in front of the jellies
         readonly List<Fish> fish = new List<Fish>();
         readonly int farCount;
-        readonly List<Shark> sharks = new List<Shark>();
+        readonly SharkKind smallShark, greatWhite;
+        readonly Shark shark = new Shark();
+        readonly Diver diver;
+        // The diver's exhaled bubbles: a fixed pool
+        readonly List<Bubble> breath = new List<Bubble>();
         readonly List<Jelly> jellies = new List<Jelly>();
         readonly List<Crab> crabs = new List<Crab>();
         readonly List<Bubble> bubbles = new List<Bubble>();
@@ -649,19 +703,26 @@ namespace Aquarium
                 f.Tv = f.V = f.Base;
             }
 
-            // One shark for two monitors' worth of tank, or less
-            for (int i = 0; i < Math.Max(1, Round(density / 2)); i++)
+            smallShark = new SharkKind
             {
-                var shark = new Shark
-                {
-                    Sprite = Sprite.Get("shark", 3), Base = Rand(9, 13), Band = new[] { 0.25, 0.75 },
-                    Dir = random.NextDouble() < 0.5 ? 1 : -1, Timer = Rand(4, 10), Phase = Rand(0, 4), Bob = Rand(0, 6.28),
-                };
-                shark.X = Rand(0, Math.Max(1, Width - shark.W));
-                shark.Y = shark.Ty = Rand(BandTop(shark), BandBottom(shark));
-                shark.V = shark.Tv = shark.Base;
-                sharks.Add(shark);
-            }
+                Sprite = Sprite.Get("shark", 3), Cruise = 22, Lunge = 50, Ahead = 70, Behind = 24, Beside = 30,
+                Escape = new[] { 24.0, 44 }, Reach = 110, Spread = 50, Beat = 1, Bob = 1.5,
+            };
+            greatWhite = new SharkKind
+            {
+                Sprite = Sprite.Get("shark_big", 3), Cruise = 18, Lunge = 40, Ahead = 100, Behind = 32, Beside = 40,
+                Escape = new[] { 32.0, 56 }, Reach = 150, Spread = 70, Beat = 0.7, Bob = 2,
+            };
+            shark.Kind = smallShark;
+            shark.Wait = Rand(SharkFirst[0], SharkFirst[1]);
+
+            diver = new Diver { Swim = Sprite.Get("diver_swim", 3), Rise = Sprite.Get("diver_rise", 3) };
+            diver.Pose = diver.Rise;
+            diver.Wait = Rand(DiverFirst[0], DiverFirst[1]);
+            // Enough for three breaths on their way up from the bottom at once
+            int[] breathSizes = { 0, 1, 0, 1, 2 };
+            for (int i = 0; i < 20; i++)
+                breath.Add(new Bubble { Sprite = Sprite.Get("bubble_" + breathSizes[i % 5], 1), Seed = Rand(0, 6.28) });
 
             for (int i = 0; i < Math.Max(1, Round(2 * density)); i++)
                 jellies.Add(new Jelly
@@ -765,8 +826,10 @@ namespace Aquarium
         public void Tick()
         {
             clock += Step;
+            StepShark(shark);
+            StepDiver(diver);
+            foreach (Bubble b in breath) StepBreath(b);
             foreach (Fish f in fish) StepFish(f);
-            foreach (Shark s in sharks) StepShark(s);
             foreach (Jelly j in jellies) StepJelly(j);
             foreach (Crab c in crabs) StepCrab(c);
             foreach (Bubble b in bubbles) StepBubble(b);
@@ -787,8 +850,6 @@ namespace Aquarium
 
         void StepLeader(Fish f)
         {
-            if (!f.Far) Startle(f);
-
             f.Timer -= Step;
             if (f.Timer <= 0)
             {
@@ -814,34 +875,6 @@ namespace Aquarium
             f.Y += (f.Ty - f.Y) * 0.012;
         }
 
-        // A fish that finds itself close to a shark turns tail and sprints off, up or down away from it.
-        // A school's followers go wherever their leader does, so a school scatters as one.
-        void Startle(Fish f)
-        {
-            if (f.Fleeing > 0)
-            {
-                f.Fleeing -= Step;
-                return;
-            }
-            foreach (Shark s in sharks)
-            {
-                if (s.Away > 0) continue;
-                double dx = f.X + f.W / 2.0 - (s.X + s.W / 2.0);
-                double dy = f.Y + f.H / 2.0 - (s.Y + s.H / 2.0);
-                if (Math.Abs(dx) > 70 || Math.Abs(dy) > 30) continue;
-
-                // Long enough to get clear, and no new mood until it is
-                f.Fleeing = f.Timer = Rand(1.5, 3);
-                // Straight round, without an ordinary turn's slowing down first
-                f.Dir = dx != 0 ? Math.Sign(dx) : s.Dir;
-                f.Turning = false;
-                f.Tv = f.Base * 2.4;
-                int side = dy != 0 ? Math.Sign(dy) : (random.NextDouble() < 0.5 ? -1 : 1);
-                f.Ty = Math.Max(BandTop(f), Math.Min(BandBottom(f), f.Y + side * Rand(15, 30)));
-                return;
-            }
-        }
-
         void StepFollower(Fish f)
         {
             Fish l = f.Leader;
@@ -852,13 +885,88 @@ namespace Aquarium
             f.Dir = Math.Abs(gap) > 7 ? Math.Sign(gap) : l.Dir;
             double move = Math.Max(-40, Math.Min(40, gap * 0.9)) * Step;
             f.X += move;
-            f.Y += (ty - f.Y) * 0.05;
+            // Kept out of the sand: a leader that fled to the floor has its school below it
+            f.Y += (Clamp(ty, 8, floorTop - f.H) - f.Y) * 0.05;
             f.V = Math.Abs(move) / Step;
+        }
+
+        // Whether the shark is close enough to frighten this fish, and if so, which way is away. The zone
+        // reaches much further in front of the shark than behind it, so fish scatter ahead of it and close
+        // up again in its wake.
+        void Scare(Fish f)
+        {
+            Shark s = shark;
+            if (!s.Active) return;
+            SharkKind k = s.Kind;
+            double dx = f.X + f.W / 2.0 - (s.X + s.W / 2.0);
+            double dy = f.Y + f.H / 2.0 - (s.Y + s.H / 2.0);
+            double rx = s.W / 2.0 + (Math.Sign(dx) == s.Dir ? k.Ahead : k.Behind);
+            double ry = s.H / 2.0 + k.Beside;
+            if (dx * dx / (rx * rx) + dy * dy / (ry * ry) > 1) return;
+
+            int away = dx < 0 ? -1 : 1;
+            bool up = dy < 0;
+            // A new target only when the way out changes, or the fish would twitch on the spot
+            if (f.Panic <= 0 || away != f.FleeDir || up != f.FleeUp)
+            {
+                f.FleeDir = away;
+                f.FleeUp = up;
+                f.Ty = Clamp(f.Y + (up ? -1 : 1) * Rand(k.Escape[0], k.Escape[1]), 8, Math.Max(8, floorTop - f.H));
+            }
+            f.Panic = Rand(1.2, 2.2);
+        }
+
+        // The diver frightens nobody, but the fish keep their distance: one that finds itself close turns
+        // away at its own pace and moves up or down out of the diver's level. A school goes where its leader
+        // goes, and the fish at the back of the tank are further away than they look, so neither is moved
+        // directly.
+        void Shy(Fish f)
+        {
+            Diver d = diver;
+            if (!d.Active || f.Leader != null || f.Far) return;
+            double dx = f.X + f.W / 2.0 - d.Cx;
+            double dy = f.Y + f.H / 2.0 - d.Cy;
+            double rx = d.W / 2.0 + 22, ry = d.H / 2.0 + 16;
+            if (dx * dx / (rx * rx) + dy * dy / (ry * ry) > 1) return;
+            f.Ty = Clamp(d.Cy + (dy < 0 ? -1 : 1) * (ry + 4) - f.H / 2.0, 8, Math.Max(8, floorTop - f.H));
+            // On top of the leader's own slow drift, or a puffer the diver swims up to is still sitting on
+            // its head when it arrives
+            f.Y += (f.Ty - f.Y) * 0.04;
+            if (f.Dir != (dx < 0 ? -1 : 1)) f.Turning = true;
+        }
+
+        // A frightened fish darts: it flips on the spot instead of slowing down to turn, swims faster than
+        // it ever does otherwise, and leaves its band and its school. Once the panic wears off a school fish
+        // finds its place again by itself.
+        void Flee(Fish f)
+        {
+            f.Panic -= Step;
+            f.Dir = f.FleeDir;
+            f.Turning = false;
+            f.V += (28 + f.Base * 1.3 - f.V) * 0.3;
+            f.X += f.Dir * f.V * Step;
+            // Cornered against the glass, it stays in the tank and gets out of the way by depth. The glass
+            // also takes its speed, or it would glide off the screen when the panic ends.
+            double held = Clamp(f.X, -f.W * 0.3, Width - f.W * 0.7);
+            if (held != f.X)
+            {
+                f.X = held;
+                f.V = Math.Min(f.V, 4);
+            }
+            f.Y += (f.Ty - f.Y) * 0.08;
+            if (f.Panic <= 0)
+            {
+                f.Tv = f.Base;
+                f.Timer = Rand(0.5, 2);
+            }
         }
 
         void StepFish(Fish f)
         {
-            if (f.Leader != null) StepFollower(f);
+            Scare(f);
+            if (f.Panic <= 0) Shy(f);
+            if (f.Panic > 0) Flee(f);
+            else if (f.Leader != null) StepFollower(f);
             else StepLeader(f);
 
             // Tail speed follows swimming speed
@@ -868,52 +976,276 @@ namespace Aquarium
             f.DrawY = Round(f.Y + Math.Sin(clock * 1.3 + f.Bob) * 1.2);
         }
 
+        // ---------- The shark ----------
+        //
+        // It is a visitor, not a resident: it waits off to one side, cruises in through the glass, crosses
+        // the whole width of every monitor, and leaves by the far side. It never catches anything. It does
+        // drift towards the nearest fish ahead and now and then lunges, which is what sends them scattering.
+        // Now and then the visit is a great white instead, which does all the same things on a bigger scale.
+
+        double SharkTop() { return 16; }
+        double SharkBottom() { return Math.Max(16, floorTop - shark.H - 4); }
+
+        void EnterShark(Shark s)
+        {
+            // Decided before anything is placed, since where it starts depends on its size
+            s.Kind = random.NextDouble() < BigSharkChance ? greatWhite : smallShark;
+            s.Active = true;
+            s.Dir = random.NextDouble() < 0.5 ? 1 : -1;
+            s.X = s.Dir > 0 ? -s.W - 4 : Width + 4;
+            s.Y = s.Ty = Rand(SharkTop(), SharkBottom());
+            s.V = s.Kind.Cruise;
+            s.Burst = 0;
+            s.Rest = Rand(2, 5);
+            s.Timer = Rand(3, 7);
+            s.Turns = random.NextDouble() < 0.35 ? 1 : 0;
+            s.Turning = false;
+            s.DrawX = Round(s.X);
+            s.DrawY = Round(s.Y);
+        }
+
+        // The near fish closest in front of its snout, if any is within reach. Fish at the back of the tank
+        // are further away than they look, so it does not go after them; they still flee from it.
+        Fish PreyFor(Shark s)
+        {
+            double snout = s.X + (s.Dir > 0 ? s.W : 0);
+            double mid = s.Y + s.H / 2.0;
+            Fish best = null;
+            double bestScore = double.PositiveInfinity;
+            foreach (Fish f in fish)
+            {
+                if (f.Far) continue;
+                double ahead = (f.X + f.W / 2.0 - snout) * s.Dir;
+                double off = Math.Abs(f.Y + f.H / 2.0 - mid);
+                if (ahead < 0 || ahead > s.Kind.Reach || off > s.Kind.Spread) continue;
+                if (ahead + off * 2 < bestScore)
+                {
+                    bestScore = ahead + off * 2;
+                    best = f;
+                }
+            }
+            return best;
+        }
+
         void StepShark(Shark s)
         {
-            if (s.Away > 0)
+            if (!s.Active)
             {
-                s.Away -= Step;
-                if (s.Away > 0) return;
-                // Back from either side, at a new depth
-                s.Dir = random.NextDouble() < 0.5 ? 1 : -1;
-                s.X = s.Dir > 0 ? -s.W : Width;
-                s.Y = s.Ty = Rand(BandTop(s), BandBottom(s));
-                s.V = s.Tv = s.Base;
-                s.Turning = false;
+                s.Wait -= Step;
+                if (s.Wait <= 0 && !diver.Active) EnterShark(s);
+                return;
             }
 
             s.Timer -= Step;
             if (s.Timer <= 0)
             {
-                s.Timer = Rand(4, 10);
-                // It cruises: no sprints, and now and then a little slower
-                s.Tv = s.Base * (random.NextDouble() < 0.25 ? 0.6 : 1);
-                s.Ty = Rand(BandTop(s), BandBottom(s));
-                if (random.NextDouble() < 0.05) s.Turning = true;
+                s.Timer = Rand(3, 7);
+                s.Ty = Rand(SharkTop(), SharkBottom());
+                // At most one change of mind a visit, and only well inside the tank, so it never doubles back
+                // out through the glass it came in by
+                bool inside = s.X > Width * 0.25 && s.X + s.W < Width * 0.75;
+                if (s.Turns > 0 && inside && random.NextDouble() < 0.35)
+                {
+                    s.Turning = true;
+                    s.Turns--;
+                }
             }
 
-            // Right out of the tank, rather than turning at the glass
-            if ((s.Dir > 0 && s.X > Width + 8) || (s.Dir < 0 && s.X < -s.W - 8))
+            Fish prey = s.Turning ? null : PreyFor(s);
+            if (prey != null)
             {
-                s.Away = Rand(4, 15);
-                return;
+                s.Ty = Clamp(prey.Y + prey.H / 2.0 - s.H / 2.0, SharkTop(), SharkBottom());
+                if (s.Burst <= 0 && s.Rest <= 0 && random.NextDouble() < 0.04)
+                {
+                    s.Burst = Rand(0.7, 1.3);
+                    s.Rest = Rand(5, 10);
+                }
             }
+            s.Burst -= Step;
+            s.Rest -= Step;
 
-            if (s.Turning && s.V < 1)
+            // A turn is a long glide down to a crawl and a flip; a fish's stops dead
+            double target = s.Turning ? 0 : s.Burst > 0 ? s.Kind.Lunge : s.Kind.Cruise;
+            s.V += (target - s.V) * (s.Burst > 0 ? 0.25 : 0.05);
+            if (s.Turning && s.V < 6)
             {
                 s.Dir = -s.Dir;
                 s.Turning = false;
             }
-
-            // Heavier than a fish: slower to speed up, to slow down and to change depth
-            s.V += ((s.Turning ? 0 : s.Tv) - s.V) * 0.05;
             s.X += s.Dir * s.V * Step;
-            s.Y += (s.Ty - s.Y) * 0.008;
+            s.Y += (s.Ty - s.Y) * (s.Burst > 0 ? 0.05 : 0.02);
 
-            s.Phase += Step * (1.2 + s.V * 0.3);
+            s.Phase += Step * (1 + s.V * 0.12) * s.Kind.Beat;
             s.Frame = TailBeat[(int)Math.Floor(s.Phase) % 4];
             s.DrawX = Round(s.X);
-            s.DrawY = Round(s.Y + Math.Sin(clock * 0.9 + s.Bob));
+            s.DrawY = Round(s.Y + Math.Sin(clock * 0.7) * s.Kind.Bob);
+
+            if ((s.Dir > 0 && s.X > Width + 8) || (s.Dir < 0 && s.X < -s.W - 8)) Leave(s, SharkGap, diver);
+        }
+
+        // A visitor going leaves the other one a quiet spell before it can come in. And if the other has
+        // been kept waiting, it goes next, or a visitor with the shorter gap could come back every time
+        // before the other ever got in.
+        void Leave(Visitor visitor, double[] gap, Visitor other)
+        {
+            visitor.Active = false;
+            visitor.Wait = Rand(gap[0], gap[1]);
+            bool overdue = other.Wait <= 0;
+            other.Wait = Math.Max(other.Wait, Rand(10, 25));
+            if (overdue) visitor.Wait = Math.Max(visitor.Wait, other.Wait + Rand(20, 40));
+        }
+
+        // ---------- The diver ----------
+        //
+        // The other visitor. It sinks in feet first through the surface somewhere along the tank, swims two
+        // or three short legs with a pause to look about after each, then rises straight back out. It
+        // breathes out a string of bubbles every few seconds. Upright on the way down and up, flat while it
+        // swims.
+
+        // The range its centre keeps to while it swims: clear of the surface and of the sand
+        double DiverTop() { return 14 + diver.Rise.Height / 2.0; }
+        double DiverBottom() { return Math.Max(DiverTop(), floorTop - diver.Swim.Height / 2.0 - 6); }
+
+        void EnterDiver(Diver d)
+        {
+            double margin = d.Swim.Width / 2.0 + 6;
+            d.Active = true;
+            d.Pose = d.Rise;
+            d.Mode = DiverMode.Down;
+            d.Cx = Rand(margin, Math.Max(margin, Width - margin));
+            d.Cy = -d.Rise.Height / 2.0 - 2;
+            d.Ty = Rand(DiverTop(), DiverTop() + (DiverBottom() - DiverTop()) * 0.6);
+            d.Dir = random.NextDouble() < 0.5 ? 1 : -1;
+            d.V = 0;
+            d.Legs = RandInt(2, 3);
+            d.Breath = Rand(1, 3);
+            d.Puffs = 0;
+            // Above the surface until its first step, rather than wherever its last visit left it
+            PlaceDiver(d);
+        }
+
+        void NextLeg(Diver d)
+        {
+            double margin = d.Swim.Width / 2.0 + 6;
+            int dir = random.NextDouble() < 0.5 ? 1 : -1;
+            // Turned round rather than sent into the glass
+            if (d.Cx + dir * 70 > Width - margin || d.Cx + dir * 70 < margin) dir = -dir;
+            d.Tx = Clamp(d.Cx + dir * Rand(60, 180), margin, Math.Max(margin, Width - margin));
+            d.Ty = Rand(DiverTop(), DiverBottom());
+            d.Dir = d.Tx == d.Cx ? d.Dir : Math.Sign(d.Tx - d.Cx);
+            d.Mode = DiverMode.Swim;
+            d.V = 0;
+        }
+
+        void Exhale(Diver d)
+        {
+            Bubble b = breath.Find(one => !one.Alive);
+            if (b == null) return;
+            b.Alive = true;
+            // From the regulator, which is at the front of the head in either pose
+            b.X = d.Cx + d.Dir * (d.Pose == d.Swim ? d.W / 2.0 - 3 : 4);
+            b.Y = d.Pose == d.Swim ? d.Cy - 2 : d.Cy - d.H / 2.0 + 6;
+            b.Vy = Rand(16, 26);
+        }
+
+        void StepDiver(Diver d)
+        {
+            if (!d.Active)
+            {
+                d.Wait -= Step;
+                if (d.Wait <= 0 && !shark.Active) EnterDiver(d);
+                return;
+            }
+
+            if (d.Mode == DiverMode.Down)
+            {
+                // Sinks steadily, and settles gently at the depth it wants
+                d.Cy += Clamp((d.Ty - d.Cy) * 0.5, 2, 11) * Step;
+                if (d.Cy >= d.Ty - 0.5)
+                {
+                    d.Pose = d.Swim;
+                    d.Mode = DiverMode.Hover;
+                    d.Timer = Rand(1, 2.5);
+                }
+            }
+            else if (d.Mode == DiverMode.Swim)
+            {
+                double gap = d.Tx - d.Cx;
+                d.V += (Math.Min(10, Math.Abs(gap) * 0.8 + 1) - d.V) * 0.06;
+                d.Cx += Math.Sign(gap) * Math.Min(Math.Abs(gap), d.V * Step);
+                d.Cy += (d.Ty - d.Cy) * 0.02;
+                if (Math.Abs(gap) < 1)
+                {
+                    d.Mode = DiverMode.Hover;
+                    d.Timer = Rand(2, 5);
+                }
+            }
+            else if (d.Mode == DiverMode.Hover)
+            {
+                d.V *= 0.9;
+                d.Timer -= Step;
+                if (d.Timer <= 0)
+                {
+                    if (d.Legs > 0)
+                    {
+                        d.Legs--;
+                        NextLeg(d);
+                    }
+                    else
+                    {
+                        d.Pose = d.Rise;
+                        d.Mode = DiverMode.Up;
+                        d.V = 0;
+                    }
+                }
+            }
+            else
+            {
+                d.V += (9 - d.V) * 0.04;
+                d.Cy -= d.V * Step;
+                if (d.Cy < -d.H / 2.0 - 4) Leave(d, DiverGap, shark);
+            }
+
+            // A breath every few seconds, let out as a short string of bubbles
+            d.Breath -= Step;
+            if (d.Breath <= 0 && d.Cy > 12)
+            {
+                d.Puffs = RandInt(3, 5);
+                d.PuffGap = 0;
+                d.Breath = Rand(3, 5);
+            }
+            if (d.Puffs > 0)
+            {
+                d.PuffGap -= Step;
+                if (d.PuffGap <= 0)
+                {
+                    Exhale(d);
+                    d.Puffs--;
+                    d.PuffGap = Rand(0.1, 0.25);
+                }
+            }
+
+            // The kick is slow drifting down, slower still hovering, and quick swimming or rising
+            d.Phase += Step * (d.Mode == DiverMode.Down ? 0.7 : d.Mode == DiverMode.Hover ? 1.1 : 2.4);
+            d.Frame = TailBeat[(int)Math.Floor(d.Phase) % 4];
+            PlaceDiver(d);
+        }
+
+        // Its pose's top left corner, from its centre, bobbing gently while it swims or hovers
+        void PlaceDiver(Diver d)
+        {
+            bool bobbing = d.Mode == DiverMode.Hover || d.Mode == DiverMode.Swim;
+            d.DrawX = Round(d.Cx - d.W / 2.0);
+            d.DrawY = Round(d.Cy - d.H / 2.0 + (bobbing ? Math.Sin(clock * 1.1) * 1.2 : 0));
+        }
+
+        void StepBreath(Bubble b)
+        {
+            if (!b.Alive) return;
+            b.Y -= b.Vy * Step;
+            if (b.Y < 6) b.Alive = false;
+            b.DrawX = Round(b.X + Math.Sin(clock * 2.4 + b.Seed) * 1.5);
+            b.DrawY = Round(b.Y);
         }
 
         void StepJelly(Jelly j)
@@ -986,7 +1318,8 @@ namespace Aquarium
 
         // ---------- Drawing ----------
 
-        // Back to front, as Aquarium.qml stacks it, with the shark between the jellies and the near fish
+        // Back to front, as Aquarium.qml stacks it. The visitors are in front of every fish, behind the near
+        // weeds and the bubbles.
         public void Draw(Bitmap target)
         {
             using (Graphics g = Canvas(target))
@@ -1000,9 +1333,11 @@ namespace Aquarium
                 Blit(g, ground, 0, 0);
                 foreach (Crab c in crabs) Blit(g, crab.Frames[c.Frame], Round(c.X), Height - 17 - crab.Height);
                 foreach (Jelly j in jellies) Blit(g, j.Sprite.Frames[j.Frame], Round(j.X), Round(j.Y));
-                foreach (Shark s in sharks) if (s.Away <= 0) DrawFish(g, s);
                 for (int i = farCount; i < fish.Count; i++) DrawFish(g, fish[i]);
+                if (diver.Active) DrawVisitor(g, diver.Pose, diver);
+                if (shark.Active) DrawVisitor(g, shark.Kind.Sprite, shark);
                 foreach (Weed w in frontWeeds) DrawWeed(g, w, 4);
+                foreach (Bubble b in breath) if (b.Alive) Blit(g, b.Sprite.Frames[0], b.DrawX, b.DrawY);
                 foreach (Bubble b in bubbles) if (b.Alive) Blit(g, b.Sprite.Frames[0], b.DrawX, b.DrawY);
                 Blit(g, surface[(int)Math.Floor(clock / 0.4) % 3], 0, 0);
             }
@@ -1011,6 +1346,11 @@ namespace Aquarium
         static void DrawFish(Graphics g, Fish f)
         {
             Blit(g, (f.Dir < 0 ? f.Sprite.Mirrored : f.Sprite.Frames)[f.Frame], f.DrawX, f.DrawY);
+        }
+
+        static void DrawVisitor(Graphics g, Sprite sprite, Visitor v)
+        {
+            Blit(g, (v.Dir < 0 ? sprite.Mirrored : sprite.Frames)[v.Frame], v.DrawX, v.DrawY);
         }
 
         // Rooted in the sand, `lift` tank pixels above the bottom
@@ -1045,6 +1385,11 @@ namespace Aquarium
         static int Round(double value)
         {
             return (int)Math.Floor(value + 0.5);
+        }
+
+        static double Clamp(double value, double low, double high)
+        {
+            return Math.Max(low, Math.Min(high, value));
         }
 
         double Rand(double a, double b)

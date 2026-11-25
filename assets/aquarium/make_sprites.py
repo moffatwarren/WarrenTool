@@ -6,10 +6,6 @@ Catppuccin Mocha in flat colour, drawn for pure black water.
 The PNGs are committed, so this only needs running after editing the art here.
 Everything is drawn facing right; Aquarium.qml mirrors a sprite to swim left.
 The output is deterministic: re-running it changes nothing unless the art does.
-
-This is WarrenTool's copy of the generator in Linux-Setup (Hyprland_Setup/aquarium). Its
-sprites are embedded in Aquarium.scr by Install.ps1 and drawn by src/Aquarium.cs, which
-mirrors them the same way. The shark is only in this copy.
 """
 import math
 import random
@@ -131,6 +127,13 @@ def from_ascii(art, pal):
             if ch != ".":
                 put(img, x, y, pal[ch])
     return img
+
+
+def framed(art, pal, rim):
+    """Draw art that has no outline of its own, with a rim one pixel outside it all round."""
+    width = max(len(row) for row in art) + 2
+    art = ["." * width] + ["." + row.ljust(width - 2, ".") + "." for row in art] + ["." * width]
+    return outline(from_ascii(art, pal), rim)
 
 
 def wiggle(img, tail, shift, amp):
@@ -302,37 +305,6 @@ def make_fish():
                 write_png(OUT / f"fish_{species}_{variant}_far_{frame}.png", distant(img))
 
 
-# Drawn without its rim, which outline() adds: the canvas keeps a clear pixel on every
-# side for it. There is no far version, since the one shark always swims in front.
-SHARK = dict(tail=12, amp=2, art=[
-    "..............................................",
-    "..GF...................GF.....................",
-    "..GFF..................GFF....................",
-    "...GFF.................GFFF...................",
-    "...GFFF...............GFFFFFF.................",
-    "....GFFF......F......GFFFFFFFF................",
-    ".....GFFF.....FFF.DDDDDDDDDDDDDDDD............",
-    "......GFFF....DDDDBBBBBBBBBBBBBBBBDDDDD.......",
-    ".......GFFBBBBBBBBBBBBBBBBBBBBBBSBSBSBBWKB....",
-    "........GFBBBBBBBBBBBBBBBBBBBBBBSBSBSBBBBBBBB.",
-    "........GFBBBBLLLLBBBBBBBBBBBBBBSBSBSLLLDDDB..",
-    "......GFFF....LLLLLLLLLLLLLLLLLLLLLLLLLLL.....",
-    ".....GFFF......FFFLLLLLLLLLLLLLLLLLLL.........",
-    "....GFFF.......GG...........GFFFFF............",
-    "....GF.....................GFFFF..............",
-    "..........................GFFF................",
-    "..........................GF..................",
-    "..............................................",
-])
-
-
-def make_shark():
-    pal = palette("#9399b2", "#6c7086", "#7f849c", "#cdd6f4")
-    base = outline(from_ascii(SHARK["art"], pal), pal["O"])
-    for frame, shift in enumerate((0, 1, -1)):
-        write_png(OUT / f"shark_{frame}.png", wiggle(base, SHARK["tail"], shift, SHARK["amp"]))
-
-
 JELLY_PAL = {
     "pink": {"B": rgb("#f5c2e7"), "L": rgb("#f5e0dc"), "D": rgb("#cba6f7"), "O": rgb("#8a6d82")},
     "aqua": {"B": rgb("#89dceb"), "L": rgb("#cdd6f4"), "D": rgb("#74c7ec"), "O": rgb("#4d7c85")},
@@ -435,6 +407,193 @@ CHEST = [
     "ODDDDDDTDDDDDDTDDDDDDO",
     "OOOOOOOOOOOOOOOOOOOOOO",
 ]
+
+# The shark: a visitor, drawn in cool greys rather than a pastel, with a white belly so
+# it still reads on black. Drawn without an outline; make_shark() adds the rim, as the
+# scenery's outline() does.
+SHARK_PAL = {
+    "B": rgb("#9399b2"), "D": rgb("#7f849c"), "L": rgb("#cdd6f4"),
+    "F": rgb("#7f849c"), "G": rgb("#6c7086"), "S": rgb("#585b70"),
+    "K": INK, "W": WHITE,
+}
+SHARK = [
+    "................................F..........................",
+    "..FF...........................FF..........................",
+    "..FFF.........................FFF..........................",
+    "...FFF.......................FFFF..........................",
+    "...FFFF.....................FFFFF..........................",
+    "....FFFF...................FFFFFF..........................",
+    ".....FFFF.................GFFFFFFF.........................",
+    "......FFFF...............GGFFFFFFFF........................",
+    ".......FFFF.......F.....DDDDDDDDDDDDDDDDDDD................",
+    "........FFFF......FF..DDDDDDDDDDDDDDDDDDDDDDDDDDD..........",
+    ".........FFFF....DDDDDDDDBBBBBBBBBBBBBBBBBBBBBBBDDDDDD.....",
+    "..........FFFFDDDDDBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBKDDDDD..",
+    "...........FFFBBBBBBBBBBBBBBBBBBBBBBBBBBBBSBSBSBBBBBBBBBBBD.",
+    "...........FFFLLLLLLLLLLLLLLLLLLLLLLLLLLLLSLSLSLLLLLLLLLLLLL",
+    "..........FFFF..LLLLLLLLLLLLLLLLLLLLLLLLLLSLSLSLLLKKKKKKLL..",
+    ".........FFFF.....LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLWLWLL.....",
+    "........FFFF.......FF....LLLLLLLLLLLLLLLLLLLLLLLLLL.........",
+    ".......FFF..........F......GFFFFF..........................",
+    "......FF...................GFFFF...........................",
+    ".....F....................GFFF.............................",
+    "..........................FFF..............................",
+]
+
+
+# The great white that sometimes comes in the shark's place: the biggest thing in the
+# tank, drawn at its own size rather than scaled up, so its pixels are the tank's pixels
+# like everything else's. A darker back than the shark's, so the two cannot be taken for
+# each other, and the white belly meets it along a jagged line, which is what makes it a
+# great white at a glance. The fins' trailing edges (G) are a step darker; P is the
+# shadow along the underside, so the white is not one flat slab.
+BIG_SHARK_PAL = {
+    "H": rgb("#7f849c"), "D": rgb("#6c7086"), "L": WHITE, "P": rgb("#a6adc8"),
+    "F": rgb("#6c7086"), "G": rgb("#585b70"), "S": rgb("#45475a"),
+    "K": INK, "W": WHITE,
+}
+BIG_SHARK = [
+    ".................................................................G....................................",
+    "G................................................................GFF..................................",
+    "GF...............................................................GFFFF................................",
+    ".GF.............................................................GFFFFFF...............................",
+    ".GFF............................................................GFFFFFFF..............................",
+    "..GFF...........................................................GFFFFFFFF.............................",
+    "..GFFF..........................................................GFFFFFFFFF............................",
+    "..GFFFF.........................................................GFFFFFFFFFF...........................",
+    "...GFFFF.......................................................GFFFFFFFFFFFF..........................",
+    "...GFFFFF......................................................GFFFFFFFFFFFFF.........................",
+    "....GFFFFF....................................................GFFFFFFFFFFFFFF.........................",
+    "....GFFFFFF..................................................GFFFFFFFHHHFFFFFF........................",
+    ".....GFFFFFF............................................HHHHHHHHHHHHHDDDHHHHHHHHHH....................",
+    ".....GFFFFFFF.....................................HHHHHHDDDDDDDDDDDDDDDDDDDDDDDDDDHHHHH...............",
+    ".....GFFFFFFFF................................HHHHDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDHHHH...........",
+    "......GFFFFFFFF..........................HHHHHDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDHHH........",
+    "......GFFFFFFFFF......................HHHDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDHH......",
+    ".......GFFFFFFFFF........GF.......HHHHDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDH.....",
+    ".......GFFFFFFFFFF.......GFF...HHHDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDHH...",
+    ".......GFFFFFFFFFFF.....GFFHHHHDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDSDDSDDSDDSDDDDDKKDDDDDDH..",
+    "........GFFFFFFFFFFF...HHHHDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDSDDSDDSDDSDDDDDKKDDDDDDDH.",
+    "........GFFFFFHHHHHHHHHDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDSDDSDDSDDSDDDDDDDDDDDDDDDDH",
+    ".........GFFFHDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDSDDSDDSDDSDDDDDDDDDDDDDDDD.",
+    "........GFFFFDDDDDDDDDDDDDDDDDDDLLLLDDDDDDDDDDLLDDDDDDDDDDDDDDDDDDDDDDDDDDDSDDSDDSDDSDLLDDLLLLLLLLLP..",
+    "........GFFFFFFFFDDDDDDDDDDDDDDDLLLLLLLLDDDDLLLLDDDDDDDDDDDDDDDDDDDDDDDDDDDSDDSDDSDLSLLLLLLLLLLLLPK...",
+    "........GFFFFFFFFFFF......PPPPLLLLLLLLLLLLLLLLLLLLLLLLDDDDLLLLLLLLLLLLLDDDSLLSLDSDDSLLLLLLLLLLPPKK....",
+    "........GFFFFFFFFF......GFFF..PPPPPLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLDLLLLLLLLLLLLPKKK.W....",
+    "........GFFFFFFFF........GFF.......PPPPLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLKKKKKW.W......",
+    "........GFFFFFFF.........GF............PPPPPLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLPPPW.W..........",
+    ".......GFFFFFFF.............................PPPPPLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLPPPPF...............",
+    ".......GFFFFFF..........................GFFFF....PPPPPPPLLLLLLLLLLLLLLLLLLLLLPPPPPFFF.................",
+    "......GFFFFFF...........................GFFF............PPPPPPPPPPPPPPPPPPPPPFFFFFFF..................",
+    "......GFFFFF...........................GFF................................GFFFFFFF....................",
+    ".....GFFFF.............................GF................................GFFFFFF......................",
+    ".....GFFF.............................G................................GFFFFFF........................",
+    "....GFFF..............................................................GFFFFF..........................",
+    "....GFF..............................................................GFFFF............................",
+    "....GF..............................................................GFFF..............................",
+    "...GF..............................................................GFF................................",
+    ".................................................................GF...................................",
+    "................................................................G.....................................",
+]
+
+
+def make_shark():
+    img = framed(SHARK, SHARK_PAL, shade(SHARK_PAL["B"], 0.36))
+    # A slower, wider sweep than a fish's: the whole tail plus the narrow wrist before it.
+    for frame, shift in enumerate((0, 1, -1)):
+        write_png(OUT / f"shark_{frame}.png", wiggle(img, 16, shift, 2))
+
+    # The rim is taken from the highlight, as the shark's is from its body: from the back
+    # it would be too dark to see on black.
+    img = framed(BIG_SHARK, BIG_SHARK_PAL, shade(BIG_SHARK_PAL["H"], 0.36))
+    for frame, shift in enumerate((0, 1, -1)):
+        write_png(OUT / f"shark_big_{frame}.png", wiggle(img, 24, shift, 3))
+
+
+# The diver: the other visitor. Two poses, both facing right: lying flat to swim, and
+# upright to sink in from the surface and rise back out of it. The wetsuit is blue, not
+# black, because a black one would vanish into the water; the tank and fins are the warm
+# accents. Drawn without an outline, like the shark.
+DIVER_PAL = {
+    "W": rgb("#89b4fa"), "V": shade(rgb("#89b4fa"), 0.68), "S": rgb("#b4befe"),
+    "Y": rgb("#f9e2af"), "T": shade(rgb("#f9e2af"), 0.7),
+    "M": rgb("#45475a"), "G": rgb("#89dceb"), "L": WHITE,
+    "R": rgb("#7f849c"), "C": rgb("#f5e0dc"),
+    "F": rgb("#fab387"), "E": shade(rgb("#fab387"), 0.7),
+}
+DIVER_SWIM = [
+    "...........................TYYYYYYYYYYYT..........",
+    "..........................TYYYYYYYYYYYYYT...VVVV..",
+    "..........................TTTTTTTTTTTTTTT..VVVVVV.",
+    ".......................VVVWWWWWWWWWWWWWWVVVVMMMMM.",
+    "EEEEE.......VVVVVVVVVVVWWWWWWWWWWWWWWWWWWWVVMGGGLM.",
+    "..FFFFEEEFVVWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWVVMGGGGM.",
+    ".....FFFFVWWWWWWWWWWVVVWWWWWWWWWWWWWWWWWWWVVMMMMMMR",
+    "............VVVVVVVVVVVWWWWWWSSSSSSSWWWWWWVVCCCCRRR",
+    "EEEEE.......VVVVVVVVVVVWWWWWWWWWWWWWWWWWWVVVVCCC...",
+    "..FFFFEEEFVVWWWWWWWWWWVVVVVVVVVWWWWWWWWVV..........",
+    ".....FFFFVVVVVVVVVVV..............VVVVCCC..........",
+]
+DIVER_RISE = [
+    ".....VVVV......",
+    "....VVVVVV.....",
+    "....VVVMMMM....",
+    "....VVMGGLM....",
+    "....VVMGGGM....",
+    ".....VMMMMMR...",
+    ".....VVCCCRR...",
+    "..TT.VVVCCV....",
+    ".TYYTVWWWWV....",
+    ".TYYTWWWWWWV...",
+    ".TYYTWWWWWWWV..",
+    ".TYYTWWWWWVWWV.",
+    ".TYYTWWWWWVWWV.",
+    ".TYYTWWWWWVWWV.",
+    ".TYYTWWWWWVVCC.",
+    ".TYYTWWWWWV.CC.",
+    "..TT.WWWWWV....",
+    ".....SSSSSS....",
+    ".....WWWWWW....",
+    ".....WWW.WWW...",
+    ".....WWW.WWW...",
+    ".....WWW.WWW...",
+    ".....VVV.VVV...",
+    ".....VVV.VVV...",
+    "....EFFF.FFF...",
+    "....EFF..FFE...",
+    "...EFF...FFE...",
+    "...EF....FE....",
+    "...EF....FE....",
+    "..EE.....EE....",
+]
+
+
+def kick(img, rows, shift, amp):
+    """wiggle() turned on its side: shear the bottom rows sideways, the lowest the most.
+
+    `amp` columns of padding each side keep them on canvas.
+    """
+    h, w = len(img), len(img[0])
+    out = blank(w + amp * 2, h)
+    for y in range(h):
+        offset = amp
+        if y >= h - rows:
+            offset += round(shift * amp * (y - (h - rows)) / rows)
+        for x in range(w):
+            if img[y][x][3]:
+                out[y][x + offset] = img[y][x]
+    return out
+
+
+def make_diver():
+    rim = shade(DIVER_PAL["W"], 0.36)
+    swim = framed(DIVER_SWIM, DIVER_PAL, rim)
+    rise = framed(DIVER_RISE, DIVER_PAL, rim)
+    # A flutter kick: the fins and shins, up and down when flat, side to side upright.
+    for frame, shift in enumerate((0, 1, -1)):
+        write_png(OUT / f"diver_swim_{frame}.png", wiggle(swim, 12, shift, 2))
+        write_png(OUT / f"diver_rise_{frame}.png", kick(rise, 12, shift, 2))
+
 
 BUBBLES = {
     "bubble_0": ["OO", "OO"],
@@ -668,8 +827,9 @@ def main():
     for old in OUT.glob("*.png"):
         old.unlink()
     make_fish()
-    make_shark()
     make_creatures()
+    make_shark()
+    make_diver()
     make_surface()
     make_sand()
     make_far_rocks()
